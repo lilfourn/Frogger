@@ -8,10 +8,9 @@ describe("TitleBar", () => {
     useSettingsStore.setState(useSettingsStore.getInitialState());
   });
 
-  it("renders title bar with app name", () => {
+  it("renders title bar", () => {
     render(<TitleBar />);
     expect(screen.getByTestId("title-bar")).toBeInTheDocument();
-    expect(screen.getByText("Frogger")).toBeInTheDocument();
   });
 
   it("renders theme toggle button", () => {

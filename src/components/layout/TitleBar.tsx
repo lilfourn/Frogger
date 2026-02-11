@@ -1,5 +1,4 @@
 import { useSettingsStore, type Theme } from "../../stores/settingsStore";
-import appLogo from "../../assets/app-logo.svg";
 
 const THEME_CYCLE: Theme[] = ["system", "light", "dark"];
 
@@ -22,13 +21,8 @@ export function TitleBar() {
     <div
       data-testid="title-bar"
       data-tauri-drag-region
-      className="flex h-10 items-center justify-between border-b border-[var(--color-border)] bg-[var(--color-bg-secondary)] pr-3 pl-20"
+      className="flex h-10 items-center justify-end border-b border-[var(--color-border)] bg-[var(--color-bg-secondary)] pr-3 pl-20"
     >
-      <div className="flex items-center gap-2">
-        <img src={appLogo} alt="Frogger" width={20} height={20} className="shrink-0" />
-        <span className="text-sm font-semibold">Frogger</span>
-      </div>
-
       <button
         aria-label="Toggle theme"
         onClick={cycleTheme}
