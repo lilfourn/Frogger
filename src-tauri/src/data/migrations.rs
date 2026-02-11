@@ -49,9 +49,60 @@ CREATE TABLE IF NOT EXISTS permission_scopes (
 );
 ";
 
+const SCHEMA_V2: &str = "
+CREATE VIRTUAL TABLE IF NOT EXISTS files_fts USING fts5(
+    file_path,
+    file_name,
+    ocr_text,
+    tokenize='porter unicode61'
+);
+
+CREATE TABLE IF NOT EXISTS ocr_text (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_path TEXT UNIQUE NOT NULL,
+    text_content TEXT NOT NULL,
+    language TEXT DEFAULT 'eng',
+    confidence REAL,
+    processed_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_ocr_file_path ON ocr_text(file_path);
+
+CREATE TABLE IF NOT EXISTS ai_metadata (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_path TEXT UNIQUE NOT NULL,
+    description TEXT,
+    tags TEXT,
+    generated_at TEXT NOT NULL,
+    model_version TEXT
+);
+
+CREATE TABLE IF NOT EXISTS chat_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS api_audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    endpoint TEXT NOT NULL,
+    request_summary TEXT,
+    tokens_used INTEGER,
+    cost_usd REAL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+";
+
+const SCHEMA_V2_VEC: &str =
+    "CREATE VIRTUAL TABLE IF NOT EXISTS vec_index USING vec0(file_path TEXT PRIMARY KEY, embedding float[384])";
+
 pub fn run_migrations(conn: &Connection) -> Result<(), AppError> {
-    conn.execute_batch("PRAGMA journal_mode=WAL;")?;
+    conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.execute_batch(SCHEMA_V1)?;
+    conn.execute_batch(SCHEMA_V2)?;
+    conn.execute(SCHEMA_V2_VEC, [])?;
     Ok(())
 }
 
@@ -59,9 +110,22 @@ pub fn run_migrations(conn: &Connection) -> Result<(), AppError> {
 mod tests {
     use super::*;
 
+    fn register_vec_extension() {
+        unsafe {
+            rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
+                sqlite_vec::sqlite3_vec_init as *const (),
+            )));
+        }
+    }
+
+    fn test_conn() -> Connection {
+        register_vec_extension();
+        Connection::open_in_memory().unwrap()
+    }
+
     #[test]
     fn test_migration_creates_tables() {
-        let conn = Connection::open_in_memory().unwrap();
+        let conn = test_conn();
         run_migrations(&conn).unwrap();
 
         let tables: Vec<String> = conn
@@ -79,6 +143,7 @@ mod tests {
 
     #[test]
     fn test_migration_enables_wal() {
+        register_vec_extension();
         let dir = std::env::temp_dir().join("frogger_test_wal");
         std::fs::create_dir_all(&dir).unwrap();
         let db_path = dir.join("test.db");
@@ -96,8 +161,87 @@ mod tests {
 
     #[test]
     fn test_migration_idempotent() {
-        let conn = Connection::open_in_memory().unwrap();
+        let conn = test_conn();
         run_migrations(&conn).unwrap();
-        run_migrations(&conn).unwrap(); // should not error
+        run_migrations(&conn).unwrap();
+    }
+
+    #[test]
+    fn test_migration_v2_creates_tables() {
+        let conn = test_conn();
+        run_migrations(&conn).unwrap();
+
+        let tables: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+
+        assert!(tables.contains(&"ocr_text".to_string()));
+        assert!(tables.contains(&"ai_metadata".to_string()));
+        assert!(tables.contains(&"chat_history".to_string()));
+        assert!(tables.contains(&"api_audit_log".to_string()));
+        assert!(tables.contains(&"vec_index".to_string()));
+
+        let has_fts: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM sqlite_master WHERE name = 'files_fts'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(has_fts);
+    }
+
+    #[test]
+    fn test_fts5_insert_and_search() {
+        let conn = test_conn();
+        run_migrations(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO files_fts(file_path, file_name, ocr_text) VALUES (?1, ?2, ?3)",
+            ["/home/user/readme.md", "readme.md", "setup instructions"],
+        )
+        .unwrap();
+
+        let result: String = conn
+            .query_row(
+                "SELECT file_path FROM files_fts WHERE files_fts MATCH ?1",
+                ["readme"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(result, "/home/user/readme.md");
+    }
+
+    fn f32_to_bytes(v: &[f32]) -> Vec<u8> {
+        v.iter().flat_map(|f| f.to_le_bytes()).collect()
+    }
+
+    #[test]
+    fn test_vec_index_insert_and_cosine_query() {
+        let conn = test_conn();
+        run_migrations(&conn).unwrap();
+
+        let mut embedding = vec![0.0f32; 384];
+        embedding[0] = 1.0;
+        let bytes = f32_to_bytes(&embedding);
+
+        conn.execute(
+            "INSERT INTO vec_index(file_path, embedding) VALUES (?1, ?2)",
+            rusqlite::params!["/test/file.txt", bytes],
+        )
+        .unwrap();
+
+        let result: String = conn
+            .query_row(
+                "SELECT file_path FROM vec_index WHERE embedding MATCH ?1 AND k = 1",
+                rusqlite::params![bytes],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(result, "/test/file.txt");
     }
 }

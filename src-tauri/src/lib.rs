@@ -12,7 +12,16 @@ use state::AppState;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
+fn register_sqlite_extensions() {
+    unsafe {
+        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
+            sqlite_vec::sqlite3_vec_init as *const (),
+        )));
+    }
+}
+
 fn init_db(app: &tauri::App) -> Result<rusqlite::Connection, Box<dyn std::error::Error>> {
+    register_sqlite_extensions();
     let app_dir = app
         .path()
         .app_data_dir()

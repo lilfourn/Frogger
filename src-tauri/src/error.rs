@@ -13,6 +13,18 @@ pub enum AppError {
 
     #[error("{0}")]
     General(String),
+
+    #[error("OCR error: {0}")]
+    Ocr(String),
+
+    #[error("Embedding error: {0}")]
+    Embedding(String),
+
+    #[error("Search error: {0}")]
+    Search(String),
+
+    #[error("Watcher error: {0}")]
+    Watcher(String),
 }
 
 impl Serialize for AppError {
