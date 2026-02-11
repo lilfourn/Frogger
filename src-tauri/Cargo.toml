@@ -34,3 +34,4 @@ tracing = "0.1"
 dirs = "6"
 sqlite-vec = "0.1"
 zerocopy = { version = "0.8", features = ["derive"] }
+notify-debouncer-mini = "0.7"

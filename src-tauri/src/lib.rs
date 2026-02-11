@@ -6,7 +6,7 @@ mod services;
 mod shell;
 mod state;
 
-use commands::file_commands;
+use commands::{file_commands, indexing_commands};
 use data::migrations;
 use state::AppState;
 use std::sync::atomic::AtomicBool;
@@ -20,7 +20,9 @@ fn register_sqlite_extensions() {
     }
 }
 
-fn init_db(app: &tauri::App) -> Result<rusqlite::Connection, Box<dyn std::error::Error>> {
+fn init_db(
+    app: &tauri::App,
+) -> Result<(rusqlite::Connection, std::path::PathBuf), Box<dyn std::error::Error>> {
     register_sqlite_extensions();
     let app_dir = app
         .path()
@@ -28,9 +30,9 @@ fn init_db(app: &tauri::App) -> Result<rusqlite::Connection, Box<dyn std::error:
         .expect("failed to resolve app data dir");
     std::fs::create_dir_all(&app_dir)?;
     let db_path = app_dir.join("frogger.db");
-    let conn = rusqlite::Connection::open(db_path)?;
+    let conn = rusqlite::Connection::open(&db_path)?;
     migrations::run_migrations(&conn)?;
-    Ok(conn)
+    Ok((conn, db_path))
 }
 
 use tauri::Manager;
@@ -45,10 +47,12 @@ pub fn run() {
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_notification::init())
         .setup(|app| {
-            let conn = init_db(app)?;
+            let (conn, db_path) = init_db(app)?;
             app.manage(AppState {
                 db: Mutex::new(conn),
+                db_path,
                 cancel_flag: Arc::new(AtomicBool::new(false)),
+                watcher_handle: Mutex::new(None),
             });
             Ok(())
         })
@@ -65,6 +69,8 @@ pub fn run() {
             file_commands::cancel_operation,
             file_commands::undo_operation,
             file_commands::redo_operation,
+            indexing_commands::start_indexing,
+            indexing_commands::stop_indexing,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
