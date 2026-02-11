@@ -1,4 +1,3 @@
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useSettingsStore, type Theme } from "../../stores/settingsStore";
 import appLogo from "../../assets/app-logo.svg";
 
@@ -23,44 +22,20 @@ export function TitleBar() {
     <div
       data-testid="title-bar"
       data-tauri-drag-region
-      className="flex h-10 items-center justify-between border-b border-[var(--color-border)] bg-[var(--color-bg-secondary)] px-3"
+      className="flex h-10 items-center justify-between border-b border-[var(--color-border)] bg-[var(--color-bg-secondary)] pr-3 pl-20"
     >
       <div className="flex items-center gap-2">
         <img src={appLogo} alt="Frogger" width={20} height={20} className="shrink-0" />
         <span className="text-sm font-semibold">Frogger</span>
       </div>
 
-      <div className="flex items-center gap-1">
-        <button
-          aria-label="Toggle theme"
-          onClick={cycleTheme}
-          className="rounded p-1.5 text-sm hover:bg-[var(--color-border)]"
-        >
-          {THEME_ICON[theme]}
-        </button>
-
-        <button
-          aria-label="Minimize"
-          onClick={() => getCurrentWindow().minimize()}
-          className="rounded p-1.5 text-sm hover:bg-[var(--color-border)]"
-        >
-          &#x2212;
-        </button>
-        <button
-          aria-label="Maximize"
-          onClick={() => getCurrentWindow().toggleMaximize()}
-          className="rounded p-1.5 text-sm hover:bg-[var(--color-border)]"
-        >
-          &#x25A1;
-        </button>
-        <button
-          aria-label="Close"
-          onClick={() => getCurrentWindow().close()}
-          className="rounded p-1.5 text-sm hover:bg-red-500 hover:text-white"
-        >
-          &#x2715;
-        </button>
-      </div>
+      <button
+        aria-label="Toggle theme"
+        onClick={cycleTheme}
+        className="rounded p-1.5 text-sm hover:bg-[var(--color-border)]"
+      >
+        {THEME_ICON[theme]}
+      </button>
     </div>
   );
 }
