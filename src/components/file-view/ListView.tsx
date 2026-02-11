@@ -1,11 +1,11 @@
 import type { FileEntry } from "../../types/file";
 import { useFileStore } from "../../stores/fileStore";
+import { FileIcon } from "../shared/FileIcon";
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  if (bytes < 1024 * 1024 * 1024)
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
 }
 
@@ -48,28 +48,16 @@ export function ListView({ entries, onNavigate }: ListViewProps) {
   return (
     <div data-testid="list-view" className="w-full">
       <div className="sticky top-0 flex border-b border-[var(--color-border)] bg-[var(--color-bg)] px-3 py-1.5 text-xs font-semibold text-[var(--color-text-secondary)]">
-        <button
-          className="flex-1 text-left"
-          onClick={() => handleColumnClick("name")}
-        >
+        <button className="flex-1 text-left" onClick={() => handleColumnClick("name")}>
           Name {sortBy === "name" && arrow}
         </button>
-        <button
-          className="w-20 text-right"
-          onClick={() => handleColumnClick("size")}
-        >
+        <button className="w-20 text-right" onClick={() => handleColumnClick("size")}>
           Size {sortBy === "size" && arrow}
         </button>
-        <button
-          className="w-28 text-right"
-          onClick={() => handleColumnClick("date")}
-        >
+        <button className="w-28 text-right" onClick={() => handleColumnClick("date")}>
           Modified {sortBy === "date" && arrow}
         </button>
-        <button
-          className="w-20 text-right"
-          onClick={() => handleColumnClick("kind")}
-        >
+        <button className="w-20 text-right" onClick={() => handleColumnClick("kind")}>
           Kind {sortBy === "kind" && arrow}
         </button>
       </div>
@@ -82,9 +70,7 @@ export function ListView({ entries, onNavigate }: ListViewProps) {
             onClick={() => onNavigate(entry)}
           >
             <div className="flex flex-1 items-center gap-2 overflow-hidden">
-              <span className="text-sm">
-                {entry.is_directory ? "\uD83D\uDCC1" : "\uD83D\uDCC4"}
-              </span>
+              <FileIcon isDirectory={entry.is_directory} size={16} />
               <span className="truncate text-sm">{entry.name}</span>
             </div>
             <span className="w-20 text-right text-xs text-[var(--color-text-secondary)]">

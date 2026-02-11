@@ -1,4 +1,5 @@
 import type { FileEntry } from "../../types/file";
+import { FileIcon } from "../shared/FileIcon";
 
 interface GridViewProps {
   entries: FileEntry[];
@@ -17,12 +18,8 @@ export function GridView({ entries, onNavigate }: GridViewProps) {
           className="flex cursor-pointer flex-col items-center gap-1 rounded p-2 hover:bg-[var(--color-bg-secondary)]"
           onClick={() => onNavigate(entry)}
         >
-          <span className="text-3xl">
-            {entry.is_directory ? "\uD83D\uDCC1" : "\uD83D\uDCC4"}
-          </span>
-          <span className="w-full truncate text-center text-xs">
-            {entry.name}
-          </span>
+          <FileIcon isDirectory={entry.is_directory} size={40} />
+          <span className="w-full truncate text-center text-xs">{entry.name}</span>
         </div>
       ))}
     </div>
