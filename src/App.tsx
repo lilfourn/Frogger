@@ -5,7 +5,7 @@ import { AppLayout } from "./components/layout/AppLayout";
 import { Sidebar } from "./components/sidebar/Sidebar";
 import { Toolbar } from "./components/toolbar/Toolbar";
 import { FileView } from "./components/file-view/FileView";
-import { Breadcrumb } from "./components/file-view/Breadcrumb";
+
 import { TabBar } from "./components/tabs/TabBar";
 import { QuickLookPanel } from "./components/quick-look/QuickLookPanel";
 import { useTheme } from "./hooks/useTheme";
@@ -117,7 +117,6 @@ function App() {
   const main = (
     <div className="flex h-full flex-col">
       <TabBar />
-      <Breadcrumb />
       <Toolbar />
       <FileView />
     </div>
