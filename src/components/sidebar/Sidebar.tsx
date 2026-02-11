@@ -21,7 +21,6 @@ function buildBookmarks(homeDir: string): Bookmark[] {
 
 export function Sidebar() {
   const navigateTo = useFileStore((s) => s.navigateTo);
-  const currentPath = useFileStore((s) => s.currentPath);
   const recentPaths = useFileStore((s) => s.recentPaths);
 
   const [bookmarks, setBookmarks] = useState<Bookmark[]>(() => buildBookmarks("/Users"));
@@ -47,9 +46,7 @@ export function Sidebar() {
             <button
               key={b.name}
               onClick={() => navigateTo(b.path)}
-              className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left hover:bg-[var(--color-border)] ${
-                currentPath === b.path ? "bg-[var(--color-accent)] text-white" : ""
-              }`}
+              className="flex w-full items-center gap-2 rounded px-2 py-1 text-left hover:bg-[var(--color-border)]"
             >
               <b.icon size={15} strokeWidth={1.5} className="shrink-0" />
               {b.name}
@@ -68,9 +65,7 @@ export function Sidebar() {
               <button
                 key={v.path}
                 onClick={() => navigateTo(v.path)}
-                className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left hover:bg-[var(--color-border)] ${
-                  currentPath === v.path ? "bg-[var(--color-accent)] text-white" : ""
-                }`}
+                className="flex w-full items-center gap-2 rounded px-2 py-1 text-left hover:bg-[var(--color-border)]"
               >
                 <HardDrive size={15} strokeWidth={1.5} className="shrink-0" />
                 {v.name}
@@ -90,9 +85,7 @@ export function Sidebar() {
               <button
                 key={p}
                 onClick={() => navigateTo(p)}
-                className={`flex w-full items-center gap-2 truncate rounded px-2 py-1 text-left hover:bg-[var(--color-border)] ${
-                  currentPath === p ? "bg-[var(--color-accent)] text-white" : ""
-                }`}
+                className="flex w-full items-center gap-2 truncate rounded px-2 py-1 text-left hover:bg-[var(--color-border)]"
               >
                 <Clock size={15} strokeWidth={1.5} className="shrink-0" />
                 <span className="truncate">{p}</span>
