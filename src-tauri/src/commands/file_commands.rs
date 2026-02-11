@@ -1,10 +1,14 @@
 use std::fs;
 use std::path::Path;
 use tauri::command;
+use tauri::State;
 
 use crate::error::AppError;
 use crate::models::file_entry::FileEntry;
+use crate::models::operation::OperationType;
 use crate::models::volume::VolumeInfo;
+use crate::services::{file_service, undo_service};
+use crate::state::AppState;
 
 #[command]
 pub fn list_directory(path: String) -> Result<Vec<FileEntry>, AppError> {
@@ -126,6 +130,124 @@ pub fn get_mounted_volumes() -> Result<Vec<VolumeInfo>, AppError> {
     }
 
     Ok(volumes)
+}
+
+#[command]
+pub fn create_directory(path: String, state: State<'_, AppState>) -> Result<(), AppError> {
+    file_service::create_dir(&path)?;
+    let conn = state.db.lock().unwrap();
+    let meta = serde_json::json!({ "path": path });
+    undo_service::record_operation(
+        &conn,
+        OperationType::CreateDir,
+        "create_dir",
+        "remove_dir",
+        &[path],
+        Some(&meta.to_string()),
+    )?;
+    Ok(())
+}
+
+#[command]
+pub fn rename_file(
+    source: String,
+    destination: String,
+    state: State<'_, AppState>,
+) -> Result<(), AppError> {
+    file_service::rename(&source, &destination)?;
+    let conn = state.db.lock().unwrap();
+    let meta = serde_json::json!({ "source": source, "destination": destination });
+    undo_service::record_operation(
+        &conn,
+        OperationType::Rename,
+        "rename",
+        "rename_inverse",
+        &[source],
+        Some(&meta.to_string()),
+    )?;
+    Ok(())
+}
+
+#[command]
+pub fn move_files(
+    sources: Vec<String>,
+    dest_dir: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, AppError> {
+    let dest_paths = file_service::move_files(&sources, &dest_dir)?;
+    let conn = state.db.lock().unwrap();
+    let moves: Vec<(&str, &str)> = dest_paths
+        .iter()
+        .zip(sources.iter())
+        .map(|(d, s)| (d.as_str(), s.as_str()))
+        .collect();
+    let meta = serde_json::json!({ "moves": moves });
+    undo_service::record_operation(
+        &conn,
+        OperationType::Move,
+        "move",
+        "move_inverse",
+        &sources,
+        Some(&meta.to_string()),
+    )?;
+    Ok(dest_paths)
+}
+
+#[command]
+pub fn copy_files(
+    sources: Vec<String>,
+    dest_dir: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, AppError> {
+    let dest_paths = file_service::copy_files(&sources, &dest_dir)?;
+    let conn = state.db.lock().unwrap();
+    let meta = serde_json::json!({ "copied_paths": dest_paths });
+    undo_service::record_operation(
+        &conn,
+        OperationType::Copy,
+        "copy",
+        "remove_copies",
+        &sources,
+        Some(&meta.to_string()),
+    )?;
+    Ok(dest_paths)
+}
+
+#[command]
+pub fn delete_files(paths: Vec<String>, state: State<'_, AppState>) -> Result<(), AppError> {
+    let results = file_service::soft_delete(&paths)?;
+    let conn = state.db.lock().unwrap();
+    let items: Vec<serde_json::Value> = results
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "trash_path": r.trash_path,
+                "original_path": r.original_path,
+            })
+        })
+        .collect();
+    let meta = serde_json::json!({ "deleted_items": items });
+    undo_service::record_operation(
+        &conn,
+        OperationType::Delete,
+        "delete",
+        "restore",
+        &paths,
+        Some(&meta.to_string()),
+    )?;
+    Ok(())
+}
+
+#[command]
+pub fn undo_operation(state: State<'_, AppState>) -> Result<String, AppError> {
+    let conn = state.db.lock().unwrap();
+    undo_service::undo(&conn)
+}
+
+#[command]
+pub fn redo_operation(state: State<'_, AppState>) -> Result<String, AppError> {
+    let conn = state.db.lock().unwrap();
+    undo_service::redo(&conn)
 }
 
 #[cfg(test)]
