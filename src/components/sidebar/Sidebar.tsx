@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Home, Monitor, FileText, Download, HardDrive, Clock, type LucideIcon } from "lucide-react";
 import { useFileStore } from "../../stores/fileStore";
 import { getHomeDir, getMountedVolumes } from "../../services/fileService";
 import type { VolumeInfo } from "../../types/volume";
@@ -6,14 +7,15 @@ import type { VolumeInfo } from "../../types/volume";
 interface Bookmark {
   name: string;
   path: string;
+  icon: LucideIcon;
 }
 
 function buildBookmarks(homeDir: string): Bookmark[] {
   return [
-    { name: "Home", path: homeDir },
-    { name: "Desktop", path: `${homeDir}/Desktop` },
-    { name: "Documents", path: `${homeDir}/Documents` },
-    { name: "Downloads", path: `${homeDir}/Downloads` },
+    { name: "Home", path: homeDir, icon: Home },
+    { name: "Desktop", path: `${homeDir}/Desktop`, icon: Monitor },
+    { name: "Documents", path: `${homeDir}/Documents`, icon: FileText },
+    { name: "Downloads", path: `${homeDir}/Downloads`, icon: Download },
   ];
 }
 
@@ -45,10 +47,11 @@ export function Sidebar() {
             <button
               key={b.name}
               onClick={() => navigateTo(b.path)}
-              className={`w-full rounded px-2 py-1 text-left hover:bg-[var(--color-border)] ${
+              className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left hover:bg-[var(--color-border)] ${
                 currentPath === b.path ? "bg-[var(--color-accent)] text-white" : ""
               }`}
             >
+              <b.icon size={15} strokeWidth={1.5} className="shrink-0" />
               {b.name}
             </button>
           ))}
@@ -65,10 +68,11 @@ export function Sidebar() {
               <button
                 key={v.path}
                 onClick={() => navigateTo(v.path)}
-                className={`w-full rounded px-2 py-1 text-left hover:bg-[var(--color-border)] ${
+                className={`flex w-full items-center gap-2 rounded px-2 py-1 text-left hover:bg-[var(--color-border)] ${
                   currentPath === v.path ? "bg-[var(--color-accent)] text-white" : ""
                 }`}
               >
+                <HardDrive size={15} strokeWidth={1.5} className="shrink-0" />
                 {v.name}
               </button>
             ))}
@@ -86,11 +90,12 @@ export function Sidebar() {
               <button
                 key={p}
                 onClick={() => navigateTo(p)}
-                className={`w-full truncate rounded px-2 py-1 text-left hover:bg-[var(--color-border)] ${
+                className={`flex w-full items-center gap-2 truncate rounded px-2 py-1 text-left hover:bg-[var(--color-border)] ${
                   currentPath === p ? "bg-[var(--color-accent)] text-white" : ""
                 }`}
               >
-                {p}
+                <Clock size={15} strokeWidth={1.5} className="shrink-0" />
+                <span className="truncate">{p}</span>
               </button>
             ))}
           </div>
