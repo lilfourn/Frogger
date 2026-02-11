@@ -41,7 +41,11 @@ pub fn run() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![file_commands::list_directory])
+        .invoke_handler(tauri::generate_handler![
+            file_commands::list_directory,
+            file_commands::get_home_dir,
+            file_commands::get_mounted_volumes,
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

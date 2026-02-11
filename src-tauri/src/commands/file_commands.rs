@@ -4,6 +4,7 @@ use tauri::command;
 
 use crate::error::AppError;
 use crate::models::file_entry::FileEntry;
+use crate::models::volume::VolumeInfo;
 
 #[command]
 pub fn list_directory(path: String) -> Result<Vec<FileEntry>, AppError> {
@@ -58,6 +59,75 @@ pub fn list_directory(path: String) -> Result<Vec<FileEntry>, AppError> {
     Ok(entries)
 }
 
+#[command]
+pub fn get_home_dir() -> Result<String, AppError> {
+    dirs::home_dir()
+        .map(|p| p.to_string_lossy().to_string())
+        .ok_or_else(|| AppError::General("could not resolve home directory".to_string()))
+}
+
+#[command]
+pub fn get_mounted_volumes() -> Result<Vec<VolumeInfo>, AppError> {
+    let mut volumes = Vec::new();
+
+    #[cfg(target_os = "macos")]
+    {
+        volumes.push(VolumeInfo {
+            name: "Macintosh HD".to_string(),
+            path: "/".to_string(),
+            total_bytes: None,
+            free_bytes: None,
+        });
+
+        let volumes_dir = Path::new("/Volumes");
+        if volumes_dir.is_dir() {
+            if let Ok(entries) = fs::read_dir(volumes_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        let name = entry.file_name().to_string_lossy().to_string();
+                        if name != "Macintosh HD" {
+                            volumes.push(VolumeInfo {
+                                name,
+                                path: path.to_string_lossy().to_string(),
+                                total_bytes: None,
+                                free_bytes: None,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    {
+        volumes.push(VolumeInfo {
+            name: "/".to_string(),
+            path: "/".to_string(),
+            total_bytes: None,
+            free_bytes: None,
+        });
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        for letter in b'A'..=b'Z' {
+            let drive = format!("{}:\\", letter as char);
+            if Path::new(&drive).exists() {
+                volumes.push(VolumeInfo {
+                    name: format!("{}: Drive", letter as char),
+                    path: drive,
+                    total_bytes: None,
+                    free_bytes: None,
+                });
+            }
+        }
+    }
+
+    Ok(volumes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -89,6 +159,20 @@ mod tests {
     fn test_list_directory_invalid_path() {
         let result = list_directory("/nonexistent/path/1234567890".to_string());
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_get_home_dir() {
+        let home = get_home_dir().unwrap();
+        assert!(!home.is_empty());
+        assert!(Path::new(&home).is_dir());
+    }
+
+    #[test]
+    fn test_get_mounted_volumes() {
+        let volumes = get_mounted_volumes().unwrap();
+        assert!(!volumes.is_empty());
+        assert!(volumes.iter().any(|v| v.path == "/"));
     }
 
     #[test]

@@ -1,10 +1,9 @@
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { listDirectory } from "./services/fileService";
-import type { FileEntry } from "./types/file";
+import { useFileStore } from "./stores/fileStore";
 import { AppLayout } from "./components/layout/AppLayout";
+import { Sidebar } from "./components/sidebar/Sidebar";
 import { useTheme } from "./hooks/useTheme";
-
-const DEFAULT_PATH = navigator.userAgent.includes("Windows") ? "C:\\Users" : "/Users";
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -16,57 +15,40 @@ function formatSize(bytes: number): string {
 function App() {
   useTheme();
 
-  const [entries, setEntries] = useState<FileEntry[]>([]);
-  const [currentPath, setCurrentPath] = useState<string>(DEFAULT_PATH);
-  const [error, setError] = useState<string | null>(null);
+  const currentPath = useFileStore((s) => s.currentPath);
+  const entries = useFileStore((s) => s.entries);
+  const error = useFileStore((s) => s.error);
+  const navigateTo = useFileStore((s) => s.navigateTo);
+  const setEntries = useFileStore((s) => s.setEntries);
+  const setError = useFileStore((s) => s.setError);
+  const setLoading = useFileStore((s) => s.setLoading);
 
   useEffect(() => {
+    const defaultPath = navigator.userAgent.includes("Windows") ? "C:\\Users" : "/Users";
+    if (!currentPath) navigateTo(defaultPath);
+  }, [currentPath, navigateTo]);
+
+  useEffect(() => {
+    if (!currentPath) return;
     let cancelled = false;
+    setLoading(true);
     listDirectory(currentPath)
       .then((result) => {
-        if (!cancelled) setEntries(result);
+        if (!cancelled) {
+          setEntries(result);
+          setLoading(false);
+        }
       })
       .catch((e) => {
-        if (!cancelled) setError(String(e));
+        if (!cancelled) {
+          setError(String(e));
+          setLoading(false);
+        }
       });
     return () => {
       cancelled = true;
     };
-  }, [currentPath]);
-
-  function handleEntryClick(entry: FileEntry) {
-    if (entry.is_directory) {
-      setError(null);
-      setCurrentPath(entry.path);
-    }
-  }
-
-  const sidebar = (
-    <div className="p-3">
-      <div className="mb-2 text-xs font-semibold uppercase text-[var(--color-text-secondary)]">
-        Favorites
-      </div>
-      <div className="space-y-0.5 text-sm">
-        {[
-          { name: "Home", path: `/Users/${navigator.userAgent.includes("Windows") ? "" : ""}` },
-          { name: "Desktop", path: `${DEFAULT_PATH}/Desktop` },
-          { name: "Documents", path: `${DEFAULT_PATH}/Documents` },
-          { name: "Downloads", path: `${DEFAULT_PATH}/Downloads` },
-        ].map((item) => (
-          <button
-            key={item.name}
-            onClick={() => {
-              setError(null);
-              setCurrentPath(item.path);
-            }}
-            className="w-full rounded px-2 py-1 text-left hover:bg-[var(--color-border)]"
-          >
-            {item.name}
-          </button>
-        ))}
-      </div>
-    </div>
-  );
+  }, [currentPath, setEntries, setError, setLoading]);
 
   const main = (
     <div className="p-2">
@@ -75,7 +57,7 @@ function App() {
         <div
           key={entry.path}
           className="flex cursor-pointer items-center gap-2 rounded px-3 py-1.5 hover:bg-[var(--color-bg-secondary)]"
-          onClick={() => handleEntryClick(entry)}
+          onClick={() => entry.is_directory && navigateTo(entry.path)}
         >
           <span className="text-sm">{entry.is_directory ? "\uD83D\uDCC1" : "\uD83D\uDCC4"}</span>
           <span className="flex-1 truncate text-sm">{entry.name}</span>
@@ -90,7 +72,12 @@ function App() {
   );
 
   return (
-    <AppLayout sidebar={sidebar} main={main} itemCount={entries.length} currentPath={currentPath} />
+    <AppLayout
+      sidebar={<Sidebar />}
+      main={main}
+      itemCount={entries.length}
+      currentPath={currentPath}
+    />
   );
 }
 
