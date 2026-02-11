@@ -47,6 +47,15 @@
   app-region: drag;
 }
 
+button,
+[role="button"],
+[role="radio"],
+select,
+a[href],
+summary {
+  cursor: pointer;
+}
+
 html,
 body,
 #root {

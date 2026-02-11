@@ -50,7 +50,7 @@ export function Toolbar() {
             aria-checked={viewMode === mode}
             aria-label={label}
             onClick={() => setViewMode(mode)}
-            className="relative z-10 flex cursor-pointer items-center justify-center rounded-full"
+            className="relative z-10 flex items-center justify-center rounded-full"
             style={{ width: BUTTON_SIZE, height: BUTTON_SIZE }}
           >
             <Icon
