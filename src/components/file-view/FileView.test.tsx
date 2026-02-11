@@ -72,4 +72,16 @@ describe("FileView", () => {
     expect(screen.getByText("readme.md")).toBeInTheDocument();
     expect(screen.getByText("photo.png")).toBeInTheDocument();
   });
+
+  it("renders column view when viewMode is column", () => {
+    useSettingsStore.setState({ viewMode: "column" });
+    render(<FileView />);
+    expect(screen.getByTestId("column-view")).toBeInTheDocument();
+  });
+
+  it("renders gallery view when viewMode is gallery", () => {
+    useSettingsStore.setState({ viewMode: "gallery" });
+    render(<FileView />);
+    expect(screen.getByTestId("gallery-view")).toBeInTheDocument();
+  });
 });

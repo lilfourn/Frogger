@@ -34,6 +34,28 @@ export function Toolbar() {
         >
           &#9638;
         </button>
+        <button
+          aria-label="Column view"
+          onClick={() => setViewMode("column")}
+          className={`rounded p-1.5 text-xs ${
+            viewMode === "column"
+              ? "bg-[var(--color-accent)] text-white"
+              : "hover:bg-[var(--color-border)]"
+          }`}
+        >
+          &#9707;
+        </button>
+        <button
+          aria-label="Gallery view"
+          onClick={() => setViewMode("gallery")}
+          className={`rounded p-1.5 text-xs ${
+            viewMode === "gallery"
+              ? "bg-[var(--color-accent)] text-white"
+              : "hover:bg-[var(--color-border)]"
+          }`}
+        >
+          &#9636;
+        </button>
       </div>
 
       <div className="flex items-center gap-1">

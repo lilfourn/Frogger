@@ -5,6 +5,8 @@ import { useFileOperations } from "../../hooks/useFileOperations";
 import { useFileNavigation } from "../../hooks/useFileNavigation";
 import { ListView } from "./ListView";
 import { GridView } from "./GridView";
+import { ColumnView } from "./ColumnView";
+import { GalleryView } from "./GalleryView";
 import { ContextMenu, type ContextMenuItem } from "../shared/ContextMenu";
 
 export function FileView() {
@@ -104,10 +106,17 @@ export function FileView() {
       aria-label="File list"
     >
       {error && <div className="p-4 text-red-500">{error}</div>}
-      {viewMode === "grid" ? (
+      {viewMode === "grid" && (
         <GridView entries={entries} onNavigate={handleNavigate} focusIndex={focusIndex} />
-      ) : (
+      )}
+      {viewMode === "list" && (
         <ListView entries={entries} onNavigate={handleNavigate} focusIndex={focusIndex} />
+      )}
+      {viewMode === "column" && (
+        <ColumnView entries={entries} onNavigate={handleNavigate} focusIndex={focusIndex} />
+      )}
+      {viewMode === "gallery" && (
+        <GalleryView entries={entries} onNavigate={handleNavigate} focusIndex={focusIndex} />
       )}
       {contextMenu && (
         <ContextMenu
