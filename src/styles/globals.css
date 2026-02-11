@@ -43,6 +43,10 @@
   }
 }
 
+*[data-tauri-drag-region] {
+  app-region: drag;
+}
+
 html,
 body,
 #root {
