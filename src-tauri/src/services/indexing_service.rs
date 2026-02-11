@@ -9,6 +9,7 @@ use rusqlite::Connection;
 use crate::data::repository;
 use crate::error::AppError;
 use crate::models::file_entry::FileEntry;
+use crate::services::ocr_service;
 
 pub struct IndexingHandle {
     _debouncer: notify_debouncer_mini::Debouncer<notify::RecommendedWatcher>,
@@ -49,7 +50,11 @@ fn process_event(conn: &Connection, path: &Path) {
         if let Some(entry) = file_entry_from_path(path) {
             let _ = repository::insert_file(conn, &entry);
             if !entry.is_directory {
-                let _ = repository::insert_fts(conn, &entry.path, &entry.name, "");
+                let modified = entry.modified_at.as_deref().unwrap_or("");
+                let ocr_text = ocr_service::process_file(conn, &entry.path, &entry.name, modified)
+                    .unwrap_or(None)
+                    .unwrap_or_default();
+                let _ = repository::insert_fts(conn, &entry.path, &entry.name, &ocr_text);
             }
         }
     } else {

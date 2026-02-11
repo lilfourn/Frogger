@@ -35,3 +35,4 @@ dirs = "6"
 sqlite-vec = "0.1"
 zerocopy = { version = "0.8", features = ["derive"] }
 notify-debouncer-mini = "0.7"
+leptess = "0.14"
