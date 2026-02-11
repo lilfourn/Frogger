@@ -30,17 +30,19 @@ export function TabBar() {
             }}
           >
             <span className="max-w-[120px] truncate">{tabLabel(tab.path)}</span>
-            <span
-              role="button"
-              aria-label="Close tab"
-              className="ml-1 rounded px-0.5 opacity-0 hover:bg-[var(--color-border)] group-hover:opacity-100"
-              onClick={(e) => {
-                e.stopPropagation();
-                closeTab(tab.id);
-              }}
-            >
-              &times;
-            </span>
+            {tabs.length > 1 && (
+              <span
+                role="button"
+                aria-label="Close tab"
+                className="ml-1 rounded px-0.5 opacity-0 hover:bg-[var(--color-border)] group-hover:opacity-100"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  closeTab(tab.id);
+                }}
+              >
+                &times;
+              </span>
+            )}
           </button>
         ))}
       </div>
