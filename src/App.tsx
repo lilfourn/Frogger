@@ -5,6 +5,7 @@ import { AppLayout } from "./components/layout/AppLayout";
 import { Sidebar } from "./components/sidebar/Sidebar";
 import { Toolbar } from "./components/toolbar/Toolbar";
 import { FileView } from "./components/file-view/FileView";
+import { Breadcrumb } from "./components/file-view/Breadcrumb";
 import { useTheme } from "./hooks/useTheme";
 
 function App() {
@@ -46,6 +47,7 @@ function App() {
 
   const main = (
     <div className="flex h-full flex-col">
+      <Breadcrumb />
       <Toolbar />
       <FileView />
     </div>
