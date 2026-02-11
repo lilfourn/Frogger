@@ -88,4 +88,94 @@ describe("fileStore", () => {
     useFileStore.getState().goUp();
     expect(useFileStore.getState().currentPath).toBe("/");
   });
+
+  it("sortBy and sortDirection have correct defaults", () => {
+    expect(useFileStore.getState().sortBy).toBe("name");
+    expect(useFileStore.getState().sortDirection).toBe("asc");
+  });
+
+  it("setSortBy updates sort field", () => {
+    useFileStore.getState().setSortBy("size");
+    expect(useFileStore.getState().sortBy).toBe("size");
+  });
+
+  it("toggleSortDirection flips asc/desc", () => {
+    useFileStore.getState().toggleSortDirection();
+    expect(useFileStore.getState().sortDirection).toBe("desc");
+    useFileStore.getState().toggleSortDirection();
+    expect(useFileStore.getState().sortDirection).toBe("asc");
+  });
+
+  it("sortedEntries sorts by name (dirs first)", () => {
+    useFileStore.getState().setEntries([
+      {
+        path: "/b.txt",
+        name: "b.txt",
+        extension: "txt",
+        mime_type: null,
+        size_bytes: 200,
+        created_at: null,
+        modified_at: null,
+        is_directory: false,
+        parent_path: "/",
+      },
+      {
+        path: "/a.txt",
+        name: "a.txt",
+        extension: "txt",
+        mime_type: null,
+        size_bytes: 100,
+        created_at: null,
+        modified_at: null,
+        is_directory: false,
+        parent_path: "/",
+      },
+      {
+        path: "/zdir",
+        name: "zdir",
+        extension: null,
+        mime_type: null,
+        size_bytes: null,
+        created_at: null,
+        modified_at: null,
+        is_directory: true,
+        parent_path: "/",
+      },
+    ]);
+    const sorted = useFileStore.getState().sortedEntries();
+    expect(sorted[0].name).toBe("zdir");
+    expect(sorted[1].name).toBe("a.txt");
+    expect(sorted[2].name).toBe("b.txt");
+  });
+
+  it("sortedEntries sorts by size", () => {
+    useFileStore.getState().setEntries([
+      {
+        path: "/big.txt",
+        name: "big.txt",
+        extension: "txt",
+        mime_type: null,
+        size_bytes: 9999,
+        created_at: null,
+        modified_at: null,
+        is_directory: false,
+        parent_path: "/",
+      },
+      {
+        path: "/small.txt",
+        name: "small.txt",
+        extension: "txt",
+        mime_type: null,
+        size_bytes: 10,
+        created_at: null,
+        modified_at: null,
+        is_directory: false,
+        parent_path: "/",
+      },
+    ]);
+    useFileStore.getState().setSortBy("size");
+    const sorted = useFileStore.getState().sortedEntries();
+    expect(sorted[0].name).toBe("small.txt");
+    expect(sorted[1].name).toBe("big.txt");
+  });
 });
