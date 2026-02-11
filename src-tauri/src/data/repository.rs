@@ -3,6 +3,7 @@ use rusqlite::{params, Connection};
 use crate::error::AppError;
 use crate::models::file_entry::FileEntry;
 use crate::models::operation::{OperationRecord, OperationType};
+use crate::models::search::{FtsResult, OcrRecord, VecResult};
 
 pub fn insert_file(conn: &Connection, entry: &FileEntry) -> Result<i64, AppError> {
     conn.execute(
@@ -180,6 +181,156 @@ pub fn mark_not_undone(conn: &Connection, operation_id: &str) -> Result<usize, A
     Ok(count)
 }
 
+// --- OCR text ---
+
+pub fn insert_ocr_text(
+    conn: &Connection,
+    file_path: &str,
+    text_content: &str,
+    language: &str,
+    confidence: Option<f64>,
+    processed_at: &str,
+) -> Result<i64, AppError> {
+    conn.execute(
+        "INSERT OR REPLACE INTO ocr_text (file_path, text_content, language, confidence, processed_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![file_path, text_content, language, confidence, processed_at],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+pub fn get_ocr_text(conn: &Connection, file_path: &str) -> Result<Option<OcrRecord>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT file_path, text_content, language, confidence, processed_at
+         FROM ocr_text WHERE file_path = ?1",
+    )?;
+    let record = stmt
+        .query_row(params![file_path], |row| {
+            Ok(OcrRecord {
+                file_path: row.get(0)?,
+                text_content: row.get(1)?,
+                language: row.get(2)?,
+                confidence: row.get(3)?,
+                processed_at: row.get(4)?,
+            })
+        })
+        .optional()?;
+    Ok(record)
+}
+
+pub fn delete_ocr_text(conn: &Connection, file_path: &str) -> Result<usize, AppError> {
+    let count = conn.execute(
+        "DELETE FROM ocr_text WHERE file_path = ?1",
+        params![file_path],
+    )?;
+    Ok(count)
+}
+
+// --- FTS5 ---
+
+pub fn insert_fts(
+    conn: &Connection,
+    file_path: &str,
+    file_name: &str,
+    ocr_text: &str,
+) -> Result<(), AppError> {
+    conn.execute(
+        "INSERT OR REPLACE INTO files_fts(file_path, file_name, ocr_text) VALUES (?1, ?2, ?3)",
+        params![file_path, file_name, ocr_text],
+    )?;
+    Ok(())
+}
+
+pub fn delete_fts(conn: &Connection, file_path: &str) -> Result<(), AppError> {
+    conn.execute(
+        "DELETE FROM files_fts WHERE file_path = ?1",
+        params![file_path],
+    )?;
+    Ok(())
+}
+
+pub fn search_fts(
+    conn: &Connection,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<FtsResult>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT file_path, rank FROM files_fts WHERE files_fts MATCH ?1 ORDER BY rank LIMIT ?2",
+    )?;
+    let results = stmt
+        .query_map(params![query, limit as i64], |row| {
+            Ok(FtsResult {
+                file_path: row.get(0)?,
+                rank: row.get(1)?,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(results)
+}
+
+// --- Vector index ---
+
+pub fn f32_to_bytes(v: &[f32]) -> Vec<u8> {
+    v.iter().flat_map(|f| f.to_le_bytes()).collect()
+}
+
+pub fn insert_vec(conn: &Connection, file_path: &str, embedding: &[f32]) -> Result<(), AppError> {
+    let bytes = f32_to_bytes(embedding);
+    conn.execute(
+        "INSERT OR REPLACE INTO vec_index(file_path, embedding) VALUES (?1, ?2)",
+        params![file_path, bytes],
+    )?;
+    Ok(())
+}
+
+pub fn delete_vec(conn: &Connection, file_path: &str) -> Result<(), AppError> {
+    conn.execute(
+        "DELETE FROM vec_index WHERE file_path = ?1",
+        params![file_path],
+    )?;
+    Ok(())
+}
+
+pub fn search_vec(
+    conn: &Connection,
+    query_embedding: &[f32],
+    limit: usize,
+) -> Result<Vec<VecResult>, AppError> {
+    let bytes = f32_to_bytes(query_embedding);
+    let mut stmt = conn
+        .prepare("SELECT file_path, distance FROM vec_index WHERE embedding MATCH ?1 AND k = ?2")?;
+    let results = stmt
+        .query_map(params![bytes, limit as i64], |row| {
+            Ok(VecResult {
+                file_path: row.get(0)?,
+                distance: row.get(1)?,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(results)
+}
+
+// --- Cascade delete (removes file from all index tables) ---
+
+pub fn delete_file_index(conn: &Connection, file_path: &str) -> Result<(), AppError> {
+    conn.execute("DELETE FROM files WHERE path = ?1", params![file_path])?;
+    conn.execute(
+        "DELETE FROM ocr_text WHERE file_path = ?1",
+        params![file_path],
+    )?;
+    conn.execute(
+        "DELETE FROM files_fts WHERE file_path = ?1",
+        params![file_path],
+    )?;
+    conn.execute(
+        "DELETE FROM vec_index WHERE file_path = ?1",
+        params![file_path],
+    )?;
+    Ok(())
+}
+
 // Needed for rusqlite optional query results
 trait OptionalExt<T> {
     fn optional(self) -> Result<Option<T>, rusqlite::Error>;
@@ -201,6 +352,11 @@ mod tests {
     use crate::data::migrations::run_migrations;
 
     fn setup_db() -> Connection {
+        unsafe {
+            rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
+                sqlite_vec::sqlite3_vec_init as *const (),
+            )));
+        }
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn).unwrap();
         conn
@@ -322,5 +478,110 @@ mod tests {
         mark_not_undone(&conn, &record.operation_id).unwrap();
         let back = get_latest_undoable(&conn).unwrap().unwrap();
         assert_eq!(back.operation_id, record.operation_id);
+    }
+
+    #[test]
+    fn test_ocr_text_crud() {
+        let conn = setup_db();
+        let path = "/home/user/image.png";
+
+        let id = insert_ocr_text(
+            &conn,
+            path,
+            "Hello world",
+            "eng",
+            Some(0.95),
+            "2025-01-01T00:00:00Z",
+        )
+        .unwrap();
+        assert!(id > 0);
+
+        let record = get_ocr_text(&conn, path).unwrap().unwrap();
+        assert_eq!(record.text_content, "Hello world");
+        assert_eq!(record.language, "eng");
+        assert!((record.confidence.unwrap() - 0.95).abs() < f64::EPSILON);
+
+        let count = delete_ocr_text(&conn, path).unwrap();
+        assert_eq!(count, 1);
+        assert!(get_ocr_text(&conn, path).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_fts_insert_and_search() {
+        let conn = setup_db();
+
+        insert_fts(
+            &conn,
+            "/home/user/readme.md",
+            "readme.md",
+            "setup instructions",
+        )
+        .unwrap();
+        insert_fts(&conn, "/home/user/notes.txt", "notes.txt", "shopping list").unwrap();
+
+        let results = search_fts(&conn, "readme", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].file_path, "/home/user/readme.md");
+
+        let results = search_fts(&conn, "instructions", 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].file_path, "/home/user/readme.md");
+    }
+
+    #[test]
+    fn test_vec_insert_and_search() {
+        let conn = setup_db();
+
+        let mut emb1 = vec![0.0f32; 384];
+        emb1[0] = 1.0;
+        let mut emb2 = vec![0.0f32; 384];
+        emb2[1] = 1.0;
+
+        insert_vec(&conn, "/file_a.txt", &emb1).unwrap();
+        insert_vec(&conn, "/file_b.txt", &emb2).unwrap();
+
+        let results = search_vec(&conn, &emb1, 2).unwrap();
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].file_path, "/file_a.txt");
+        assert!(results[0].distance < results[1].distance);
+    }
+
+    #[test]
+    fn test_delete_file_index_cascades() {
+        let conn = setup_db();
+        let path = "/home/user/doc.pdf";
+
+        let file = FileEntry {
+            path: path.to_string(),
+            name: "doc.pdf".to_string(),
+            extension: Some("pdf".to_string()),
+            mime_type: Some("application/pdf".to_string()),
+            size_bytes: Some(5000),
+            created_at: None,
+            modified_at: None,
+            is_directory: false,
+            parent_path: Some("/home/user".to_string()),
+        };
+        insert_file(&conn, &file).unwrap();
+        insert_ocr_text(
+            &conn,
+            path,
+            "tax return",
+            "eng",
+            None,
+            "2025-01-01T00:00:00Z",
+        )
+        .unwrap();
+        insert_fts(&conn, path, "doc.pdf", "tax return").unwrap();
+        insert_vec(&conn, path, &vec![0.1f32; 384]).unwrap();
+
+        delete_file_index(&conn, path).unwrap();
+
+        assert!(get_by_path(&conn, path).unwrap().is_none());
+        assert!(get_ocr_text(&conn, path).unwrap().is_none());
+        assert!(search_fts(&conn, "tax", 10).unwrap().is_empty());
+        assert!(search_vec(&conn, &vec![0.1f32; 384], 10)
+            .unwrap()
+            .is_empty());
     }
 }
