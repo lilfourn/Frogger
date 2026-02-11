@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { FileEntry } from "../types/file";
+import { useSettingsStore } from "./settingsStore";
 
 const MAX_RECENTS = 20;
 
@@ -81,8 +82,10 @@ export const useFileStore = create<FileState>()((set, get) => ({
 
   sortedEntries: () => {
     const { entries, sortBy, sortDirection } = get();
-    const dirs = entries.filter((e) => e.is_directory);
-    const files = entries.filter((e) => !e.is_directory);
+    const { showHiddenFiles } = useSettingsStore.getState();
+    const visible = showHiddenFiles ? entries : entries.filter((e) => !e.name.startsWith("."));
+    const dirs = visible.filter((e) => e.is_directory);
+    const files = visible.filter((e) => !e.is_directory);
     const mul = sortDirection === "asc" ? 1 : -1;
 
     const compare = (a: FileEntry, b: FileEntry): number => {

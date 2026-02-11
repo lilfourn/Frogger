@@ -12,6 +12,7 @@ import { useTheme } from "./hooks/useTheme";
 import { useFileOperations } from "./hooks/useFileOperations";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useQuickLook } from "./hooks/useQuickLook";
+import { useSettingsStore } from "./stores/settingsStore";
 
 function App() {
   useTheme();
@@ -28,6 +29,7 @@ function App() {
   const setError = useFileStore((s) => s.setError);
   const setLoading = useFileStore((s) => s.setLoading);
 
+  const toggleHiddenFiles = useSettingsStore((s) => s.toggleHiddenFiles);
   const { undo, redo, deleteFiles, rename, createDir } = useFileOperations();
   const quickLook = useQuickLook();
 
@@ -69,6 +71,7 @@ function App() {
         },
       },
       { key: "Backspace", handler: goUp },
+      { key: ".", meta: true, shift: true, handler: toggleHiddenFiles },
     ],
     [
       undo,
@@ -82,6 +85,7 @@ function App() {
       activeTabId,
       quickLook,
       goUp,
+      toggleHiddenFiles,
     ],
   );
 
