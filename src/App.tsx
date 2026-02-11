@@ -7,9 +7,11 @@ import { Toolbar } from "./components/toolbar/Toolbar";
 import { FileView } from "./components/file-view/FileView";
 import { Breadcrumb } from "./components/file-view/Breadcrumb";
 import { TabBar } from "./components/tabs/TabBar";
+import { QuickLookPanel } from "./components/quick-look/QuickLookPanel";
 import { useTheme } from "./hooks/useTheme";
 import { useFileOperations } from "./hooks/useFileOperations";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
+import { useQuickLook } from "./hooks/useQuickLook";
 
 function App() {
   useTheme();
@@ -27,6 +29,7 @@ function App() {
   const setLoading = useFileStore((s) => s.setLoading);
 
   const { undo, redo, deleteFiles, rename, createDir } = useFileOperations();
+  const quickLook = useQuickLook();
 
   const shortcuts = useMemo(
     () => [
@@ -59,6 +62,12 @@ function App() {
       },
       { key: "t", meta: true, handler: addTab },
       { key: "w", meta: true, handler: () => closeTab(activeTabId) },
+      {
+        key: " ",
+        handler: () => {
+          if (selectedFiles.length === 1) quickLook.toggle(selectedFiles[0]);
+        },
+      },
       { key: "Backspace", handler: goUp },
     ],
     [
@@ -71,6 +80,7 @@ function App() {
       addTab,
       closeTab,
       activeTabId,
+      quickLook,
       goUp,
     ],
   );
@@ -114,12 +124,20 @@ function App() {
   );
 
   return (
-    <AppLayout
-      sidebar={<Sidebar />}
-      main={main}
-      itemCount={entries.length}
-      currentPath={currentPath}
-    />
+    <>
+      <AppLayout
+        sidebar={<Sidebar />}
+        main={main}
+        itemCount={entries.length}
+        currentPath={currentPath}
+      />
+      <QuickLookPanel
+        isOpen={quickLook.isOpen}
+        filePath={quickLook.filePath}
+        previewType={quickLook.previewType}
+        onClose={quickLook.close}
+      />
+    </>
   );
 }
 
