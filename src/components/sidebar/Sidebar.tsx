@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { useFileStore } from "../../stores/fileStore";
 import { getHomeDir, getMountedVolumes } from "../../services/fileService";
 import type { VolumeInfo } from "../../types/volume";
+import appLogo from "../../assets/app-logo.svg";
 
 interface Bookmark {
   name: string;
@@ -22,9 +23,7 @@ export function Sidebar() {
   const currentPath = useFileStore((s) => s.currentPath);
   const recentPaths = useFileStore((s) => s.recentPaths);
 
-  const [bookmarks, setBookmarks] = useState<Bookmark[]>(() =>
-    buildBookmarks("/Users"),
-  );
+  const [bookmarks, setBookmarks] = useState<Bookmark[]>(() => buildBookmarks("/Users"));
   const [volumes, setVolumes] = useState<VolumeInfo[]>([]);
 
   useEffect(() => {
@@ -38,6 +37,10 @@ export function Sidebar() {
 
   return (
     <nav className="flex h-full flex-col gap-4 p-3 text-sm">
+      <div className="flex items-center gap-2 px-2 pb-1">
+        <img src={appLogo} alt="Frogger" width={24} height={24} className="shrink-0" />
+        <span className="text-xs font-semibold text-[var(--color-text-secondary)]">Frogger</span>
+      </div>
       <section>
         <h3 className="mb-1 text-xs font-semibold uppercase text-[var(--color-text-secondary)]">
           Favorites
