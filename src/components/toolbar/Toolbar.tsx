@@ -15,7 +15,7 @@ export function Toolbar() {
         <button
           aria-label="List view"
           onClick={() => setViewMode("list")}
-          className={`rounded p-1.5 text-xs ${
+          className={`flex h-7 w-7 items-center justify-center rounded text-xs ${
             viewMode === "list"
               ? "bg-[var(--color-accent)] text-white"
               : "hover:bg-[var(--color-border)]"
@@ -26,7 +26,7 @@ export function Toolbar() {
         <button
           aria-label="Grid view"
           onClick={() => setViewMode("grid")}
-          className={`rounded p-1.5 text-xs ${
+          className={`flex h-7 w-7 items-center justify-center rounded text-xs ${
             viewMode === "grid"
               ? "bg-[var(--color-accent)] text-white"
               : "hover:bg-[var(--color-border)]"
@@ -37,7 +37,7 @@ export function Toolbar() {
         <button
           aria-label="Column view"
           onClick={() => setViewMode("column")}
-          className={`rounded p-1.5 text-xs ${
+          className={`flex h-7 w-7 items-center justify-center rounded text-xs ${
             viewMode === "column"
               ? "bg-[var(--color-accent)] text-white"
               : "hover:bg-[var(--color-border)]"
@@ -48,7 +48,7 @@ export function Toolbar() {
         <button
           aria-label="Gallery view"
           onClick={() => setViewMode("gallery")}
-          className={`rounded p-1.5 text-xs ${
+          className={`flex h-7 w-7 items-center justify-center rounded text-xs ${
             viewMode === "gallery"
               ? "bg-[var(--color-accent)] text-white"
               : "hover:bg-[var(--color-border)]"
@@ -73,7 +73,7 @@ export function Toolbar() {
         <button
           aria-label="Toggle sort direction"
           onClick={toggleSortDirection}
-          className="rounded p-1.5 text-xs hover:bg-[var(--color-border)]"
+          className="flex h-7 w-7 items-center justify-center rounded text-xs hover:bg-[var(--color-border)]"
         >
           {sortDirection === "asc" ? "\u25B2" : "\u25BC"}
         </button>

@@ -26,7 +26,7 @@ export function TitleBar() {
       <button
         aria-label="Toggle theme"
         onClick={cycleTheme}
-        className="rounded p-1.5 text-sm hover:bg-[var(--color-border)]"
+        className="flex h-7 w-7 items-center justify-center rounded text-sm hover:bg-[var(--color-border)]"
       >
         {THEME_ICON[theme]}
       </button>
