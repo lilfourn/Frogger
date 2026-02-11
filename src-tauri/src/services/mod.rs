@@ -1,3 +1,4 @@
+pub mod embedding_service;
 pub mod file_service;
 pub mod indexing_service;
 pub mod ocr_service;

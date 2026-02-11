@@ -9,6 +9,7 @@ use rusqlite::Connection;
 use crate::data::repository;
 use crate::error::AppError;
 use crate::models::file_entry::FileEntry;
+use crate::services::embedding_service;
 use crate::services::ocr_service;
 
 pub struct IndexingHandle {
@@ -55,6 +56,18 @@ fn process_event(conn: &Connection, path: &Path) {
                     .unwrap_or(None)
                     .unwrap_or_default();
                 let _ = repository::insert_fts(conn, &entry.path, &entry.name, &ocr_text);
+                let ocr_ref = if ocr_text.is_empty() {
+                    None
+                } else {
+                    Some(ocr_text.as_str())
+                };
+                let _ = embedding_service::embed_file(
+                    conn,
+                    &entry.path,
+                    &entry.name,
+                    entry.extension.as_deref(),
+                    ocr_ref,
+                );
             }
         }
     } else {

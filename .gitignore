@@ -30,3 +30,6 @@ dist-ssr
 # Test results
 test-results/
 playwright-report/
+
+# ML model cache
+src-tauri/.fastembed_cache/
