@@ -178,4 +178,63 @@ describe("fileStore", () => {
     expect(sorted[0].name).toBe("small.txt");
     expect(sorted[1].name).toBe("big.txt");
   });
+
+  // --- Tab tests ---
+
+  it("starts with one default tab", () => {
+    useFileStore.getState().navigateTo("/Users");
+    const { tabs, activeTabId } = useFileStore.getState();
+    expect(tabs).toHaveLength(1);
+    expect(tabs[0].id).toBe(activeTabId);
+    expect(tabs[0].path).toBe("/Users");
+  });
+
+  it("addTab creates a new tab at current path", () => {
+    useFileStore.getState().navigateTo("/Users");
+    useFileStore.getState().addTab();
+    const { tabs, activeTabId } = useFileStore.getState();
+    expect(tabs).toHaveLength(2);
+    expect(tabs[1].id).toBe(activeTabId);
+    expect(tabs[1].path).toBe("/Users");
+  });
+
+  it("switchTab changes active tab and currentPath", () => {
+    useFileStore.getState().navigateTo("/Users");
+    useFileStore.getState().addTab();
+    useFileStore.getState().navigateTo("/tmp");
+
+    const firstTabId = useFileStore.getState().tabs[0].id;
+    useFileStore.getState().switchTab(firstTabId);
+
+    expect(useFileStore.getState().activeTabId).toBe(firstTabId);
+    expect(useFileStore.getState().currentPath).toBe("/Users");
+  });
+
+  it("closeTab removes tab and switches to adjacent", () => {
+    useFileStore.getState().navigateTo("/Users");
+    useFileStore.getState().addTab();
+    useFileStore.getState().navigateTo("/tmp");
+
+    const secondTabId = useFileStore.getState().activeTabId;
+    useFileStore.getState().closeTab(secondTabId);
+
+    expect(useFileStore.getState().tabs).toHaveLength(1);
+    expect(useFileStore.getState().currentPath).toBe("/Users");
+  });
+
+  it("closeTab does not remove last tab", () => {
+    useFileStore.getState().navigateTo("/Users");
+    const tabId = useFileStore.getState().activeTabId;
+    useFileStore.getState().closeTab(tabId);
+    expect(useFileStore.getState().tabs).toHaveLength(1);
+  });
+
+  it("navigateTo updates the active tab path", () => {
+    useFileStore.getState().navigateTo("/Users");
+    useFileStore.getState().navigateTo("/tmp");
+    const activeTab = useFileStore
+      .getState()
+      .tabs.find((t) => t.id === useFileStore.getState().activeTabId);
+    expect(activeTab?.path).toBe("/tmp");
+  });
 });

@@ -3,8 +3,18 @@ import type { FileEntry } from "../types/file";
 
 const MAX_RECENTS = 20;
 
+let tabIdCounter = 1;
+function nextTabId(): string {
+  return `tab-${tabIdCounter++}`;
+}
+
 export type SortField = "name" | "size" | "date" | "kind";
 export type SortDirection = "asc" | "desc";
+
+export interface Tab {
+  id: string;
+  path: string;
+}
 
 interface FileState {
   currentPath: string;
@@ -15,6 +25,8 @@ interface FileState {
   loading: boolean;
   sortBy: SortField;
   sortDirection: SortDirection;
+  tabs: Tab[];
+  activeTabId: string;
   navigateTo: (path: string) => void;
   goUp: () => void;
   setEntries: (entries: FileEntry[]) => void;
@@ -25,7 +37,12 @@ interface FileState {
   setSortBy: (field: SortField) => void;
   toggleSortDirection: () => void;
   sortedEntries: () => FileEntry[];
+  addTab: () => void;
+  closeTab: (id: string) => void;
+  switchTab: (id: string) => void;
 }
+
+const defaultTabId = nextTabId();
 
 export const useFileStore = create<FileState>()((set, get) => ({
   currentPath: "",
@@ -36,12 +53,15 @@ export const useFileStore = create<FileState>()((set, get) => ({
   loading: false,
   sortBy: "name",
   sortDirection: "asc",
+  tabs: [{ id: defaultTabId, path: "" }],
+  activeTabId: defaultTabId,
 
   navigateTo: (path) =>
     set((s) => ({
       currentPath: path,
       error: null,
       recentPaths: [path, ...s.recentPaths.filter((p) => p !== path)].slice(0, MAX_RECENTS),
+      tabs: s.tabs.map((t) => (t.id === s.activeTabId ? { ...t, path } : t)),
     })),
 
   goUp: () => {
@@ -79,5 +99,38 @@ export const useFileStore = create<FileState>()((set, get) => ({
     };
 
     return [...dirs.sort(compare), ...files.sort(compare)];
+  },
+
+  addTab: () => {
+    const { currentPath } = get();
+    const id = nextTabId();
+    set((s) => ({
+      tabs: [...s.tabs, { id, path: currentPath }],
+      activeTabId: id,
+    }));
+  },
+
+  closeTab: (id) => {
+    const { tabs, activeTabId } = get();
+    if (tabs.length <= 1) return;
+    const idx = tabs.findIndex((t) => t.id === id);
+    const remaining = tabs.filter((t) => t.id !== id);
+    if (id === activeTabId) {
+      const newActive = remaining[Math.min(idx, remaining.length - 1)];
+      set({
+        tabs: remaining,
+        activeTabId: newActive.id,
+        currentPath: newActive.path,
+      });
+    } else {
+      set({ tabs: remaining });
+    }
+  },
+
+  switchTab: (id) => {
+    const tab = get().tabs.find((t) => t.id === id);
+    if (tab) {
+      set({ activeTabId: id, currentPath: tab.path });
+    }
   },
 }));

@@ -6,6 +6,7 @@ import { Sidebar } from "./components/sidebar/Sidebar";
 import { Toolbar } from "./components/toolbar/Toolbar";
 import { FileView } from "./components/file-view/FileView";
 import { Breadcrumb } from "./components/file-view/Breadcrumb";
+import { TabBar } from "./components/tabs/TabBar";
 import { useTheme } from "./hooks/useTheme";
 import { useFileOperations } from "./hooks/useFileOperations";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
@@ -18,6 +19,9 @@ function App() {
   const selectedFiles = useFileStore((s) => s.selectedFiles);
   const navigateTo = useFileStore((s) => s.navigateTo);
   const goUp = useFileStore((s) => s.goUp);
+  const addTab = useFileStore((s) => s.addTab);
+  const closeTab = useFileStore((s) => s.closeTab);
+  const activeTabId = useFileStore((s) => s.activeTabId);
   const setEntries = useFileStore((s) => s.setEntries);
   const setError = useFileStore((s) => s.setError);
   const setLoading = useFileStore((s) => s.setLoading);
@@ -53,9 +57,22 @@ function App() {
           if (name) createDir(name);
         },
       },
+      { key: "t", meta: true, handler: addTab },
+      { key: "w", meta: true, handler: () => closeTab(activeTabId) },
       { key: "Backspace", handler: goUp },
     ],
-    [undo, redo, deleteFiles, selectedFiles, rename, createDir, goUp],
+    [
+      undo,
+      redo,
+      deleteFiles,
+      selectedFiles,
+      rename,
+      createDir,
+      addTab,
+      closeTab,
+      activeTabId,
+      goUp,
+    ],
   );
 
   useKeyboardShortcuts(shortcuts);
@@ -89,6 +106,7 @@ function App() {
 
   const main = (
     <div className="flex h-full flex-col">
+      <TabBar />
       <Breadcrumb />
       <Toolbar />
       <FileView />
