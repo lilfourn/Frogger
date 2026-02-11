@@ -23,8 +23,8 @@ describe("StatusBar", () => {
     expect(screen.getByText("0 items")).toBeInTheDocument();
   });
 
-  it("displays current path when provided", () => {
-    render(<StatusBar itemCount={5} currentPath="/Users/test" />);
-    expect(screen.getByText("/Users/test")).toBeInTheDocument();
+  it("displays branding", () => {
+    render(<StatusBar itemCount={5} />);
+    expect(screen.getByText("Frogger")).toBeInTheDocument();
   });
 });

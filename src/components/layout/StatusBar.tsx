@@ -5,7 +5,7 @@ interface StatusBarProps {
   currentPath?: string;
 }
 
-export function StatusBar({ itemCount, currentPath }: StatusBarProps) {
+export function StatusBar({ itemCount }: StatusBarProps) {
   return (
     <div
       data-testid="status-bar"
@@ -15,9 +15,6 @@ export function StatusBar({ itemCount, currentPath }: StatusBarProps) {
         {itemCount} {itemCount === 1 ? "item" : "items"}
       </span>
       <div className="flex items-center gap-2">
-        {currentPath && (
-          <span className="truncate text-xs text-[var(--color-text-secondary)]">{currentPath}</span>
-        )}
         <img src={appLogo} alt="Frogger" width={16} height={16} className="shrink-0 opacity-60" />
         <span className="text-xs font-medium text-[var(--color-text-secondary)] opacity-60">
           Frogger
