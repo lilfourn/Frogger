@@ -29,26 +29,17 @@ describe("Toolbar", () => {
     expect(useSettingsStore.getState().viewMode).toBe("list");
   });
 
-  it("renders sort dropdown", () => {
+  it("renders path breadcrumb", () => {
+    useFileStore.setState({ currentPath: "/Users/test/Documents" });
     render(<Toolbar />);
-    expect(screen.getByLabelText("Sort by")).toBeInTheDocument();
+    expect(screen.getByText("Documents")).toBeInTheDocument();
+    expect(screen.getByText("test")).toBeInTheDocument();
   });
 
-  it("changing sort updates fileStore", () => {
+  it("clicking path segment navigates", () => {
+    useFileStore.setState({ currentPath: "/Users/test/Documents" });
     render(<Toolbar />);
-    fireEvent.change(screen.getByLabelText("Sort by"), { target: { value: "size" } });
-    expect(useFileStore.getState().sortBy).toBe("size");
-  });
-
-  it("renders sort direction toggle", () => {
-    render(<Toolbar />);
-    expect(screen.getByLabelText("Toggle sort direction")).toBeInTheDocument();
-  });
-
-  it("clicking sort direction toggles asc/desc", () => {
-    render(<Toolbar />);
-    expect(useFileStore.getState().sortDirection).toBe("asc");
-    fireEvent.click(screen.getByLabelText("Toggle sort direction"));
-    expect(useFileStore.getState().sortDirection).toBe("desc");
+    fireEvent.click(screen.getByText("Users"));
+    expect(useFileStore.getState().currentPath).toBe("/Users");
   });
 });

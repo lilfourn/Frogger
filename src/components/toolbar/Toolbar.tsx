@@ -1,13 +1,6 @@
-import {
-  List,
-  LayoutGrid,
-  Columns3,
-  GalleryHorizontalEnd,
-  ChevronUp,
-  ChevronDown,
-} from "lucide-react";
+import { List, LayoutGrid, Columns3, GalleryHorizontalEnd, ChevronRight } from "lucide-react";
 import { useSettingsStore, type ViewMode } from "../../stores/settingsStore";
-import { useFileStore, type SortField } from "../../stores/fileStore";
+import { useFileStore } from "../../stores/fileStore";
 
 const VIEW_OPTIONS: { mode: ViewMode; label: string; Icon: typeof List }[] = [
   { mode: "list", label: "List view", Icon: List },
@@ -18,15 +11,22 @@ const VIEW_OPTIONS: { mode: ViewMode; label: string; Icon: typeof List }[] = [
 
 const BUTTON_SIZE = 28;
 
+function pathSegments(path: string): { name: string; path: string }[] {
+  const parts = path.replace(/\/+$/, "").split("/").filter(Boolean);
+  return parts.map((name, i) => ({
+    name,
+    path: "/" + parts.slice(0, i + 1).join("/"),
+  }));
+}
+
 export function Toolbar() {
   const viewMode = useSettingsStore((s) => s.viewMode);
   const setViewMode = useSettingsStore((s) => s.setViewMode);
-  const sortBy = useFileStore((s) => s.sortBy);
-  const sortDirection = useFileStore((s) => s.sortDirection);
-  const setSortBy = useFileStore((s) => s.setSortBy);
-  const toggleSortDirection = useFileStore((s) => s.toggleSortDirection);
+  const currentPath = useFileStore((s) => s.currentPath);
+  const navigateTo = useFileStore((s) => s.navigateTo);
 
   const activeIndex = VIEW_OPTIONS.findIndex((o) => o.mode === viewMode);
+  const segments = pathSegments(currentPath);
 
   return (
     <div className="flex items-center gap-3 border-b border-[var(--color-border)] px-3 py-1.5">
@@ -62,30 +62,33 @@ export function Toolbar() {
         ))}
       </div>
 
-      <div className="flex items-center gap-1">
-        <select
-          aria-label="Sort by"
-          value={sortBy}
-          onChange={(e) => setSortBy(e.target.value as SortField)}
-          className="rounded border border-[var(--color-border)] bg-[var(--color-bg)] px-2 py-1 text-xs text-[var(--color-text)]"
-        >
-          <option value="name">Name</option>
-          <option value="size">Size</option>
-          <option value="date">Date</option>
-          <option value="kind">Kind</option>
-        </select>
+      <nav aria-label="Path" className="flex min-w-0 flex-1 items-center overflow-hidden text-xs">
         <button
-          aria-label="Toggle sort direction"
-          onClick={toggleSortDirection}
-          className="flex h-7 w-7 items-center justify-center rounded text-xs hover:bg-[var(--color-border)]"
+          onClick={() => navigateTo("/")}
+          className="shrink-0 text-[var(--color-text-secondary)] hover:text-[var(--color-text)]"
         >
-          {sortDirection === "asc" ? (
-            <ChevronUp size={14} strokeWidth={1.5} />
-          ) : (
-            <ChevronDown size={14} strokeWidth={1.5} />
-          )}
+          /
         </button>
-      </div>
+        {segments.map((seg, i) => (
+          <span key={seg.path} className="flex items-center">
+            <ChevronRight
+              size={12}
+              strokeWidth={1.5}
+              className="mx-0.5 shrink-0 text-[var(--color-text-secondary)]"
+            />
+            {i === segments.length - 1 ? (
+              <span className="truncate font-medium text-[var(--color-text)]">{seg.name}</span>
+            ) : (
+              <button
+                onClick={() => navigateTo(seg.path)}
+                className="truncate text-[var(--color-text-secondary)] hover:text-[var(--color-text)]"
+              >
+                {seg.name}
+              </button>
+            )}
+          </span>
+        ))}
+      </nav>
     </div>
   );
 }
