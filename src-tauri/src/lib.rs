@@ -6,7 +6,7 @@ mod services;
 mod shell;
 mod state;
 
-use commands::{file_commands, indexing_commands};
+use commands::{file_commands, indexing_commands, search_commands};
 use data::migrations;
 use state::AppState;
 use std::sync::atomic::AtomicBool;
@@ -71,6 +71,7 @@ pub fn run() {
             file_commands::redo_operation,
             indexing_commands::start_indexing,
             indexing_commands::stop_indexing,
+            search_commands::search,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
