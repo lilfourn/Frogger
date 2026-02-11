@@ -27,9 +27,10 @@ function getKind(entry: FileEntry): string {
 interface ListViewProps {
   entries: FileEntry[];
   onNavigate: (entry: FileEntry) => void;
+  focusIndex?: number;
 }
 
-export function ListView({ entries, onNavigate }: ListViewProps) {
+export function ListView({ entries, onNavigate, focusIndex = -1 }: ListViewProps) {
   const sortBy = useFileStore((s) => s.sortBy);
   const sortDirection = useFileStore((s) => s.sortDirection);
   const setSortBy = useFileStore((s) => s.setSortBy);
@@ -63,10 +64,15 @@ export function ListView({ entries, onNavigate }: ListViewProps) {
       </div>
 
       <div className="overflow-auto">
-        {entries.map((entry) => (
+        {entries.map((entry, idx) => (
           <div
             key={entry.path}
-            className="flex cursor-pointer items-center px-3 py-1.5 hover:bg-[var(--color-bg-secondary)]"
+            role="listitem"
+            className={`flex cursor-pointer items-center px-3 py-1.5 hover:bg-[var(--color-bg-secondary)] ${
+              idx === focusIndex
+                ? "bg-[var(--color-accent)]/10 outline outline-2 outline-[var(--color-accent)]"
+                : ""
+            }`}
             onClick={() => onNavigate(entry)}
           >
             <div className="flex flex-1 items-center gap-2 overflow-hidden">
