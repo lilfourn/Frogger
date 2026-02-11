@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
-use tauri::command;
-use tauri::State;
+use std::sync::atomic::Ordering;
+use tauri::{command, AppHandle, Emitter, State};
 
 use crate::error::AppError;
 use crate::models::file_entry::FileEntry;
@@ -236,6 +236,38 @@ pub fn delete_files(paths: Vec<String>, state: State<'_, AppState>) -> Result<()
         Some(&meta.to_string()),
     )?;
     Ok(())
+}
+
+#[command]
+pub fn copy_files_with_progress(
+    sources: Vec<String>,
+    dest_dir: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Vec<String>, AppError> {
+    state.cancel_flag.store(false, Ordering::Relaxed);
+    let cancel = state.cancel_flag.clone();
+
+    let dest_paths = file_service::copy_files_with_progress(&sources, &dest_dir, &cancel, |evt| {
+        let _ = app.emit("file-operation-progress", evt);
+    })?;
+
+    let conn = state.db.lock().unwrap();
+    let meta = serde_json::json!({ "copied_paths": dest_paths });
+    undo_service::record_operation(
+        &conn,
+        OperationType::Copy,
+        "copy",
+        "remove_copies",
+        &sources,
+        Some(&meta.to_string()),
+    )?;
+    Ok(dest_paths)
+}
+
+#[command]
+pub fn cancel_operation(state: State<'_, AppState>) {
+    state.cancel_flag.store(true, Ordering::Relaxed);
 }
 
 #[command]

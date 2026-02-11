@@ -34,6 +34,14 @@ export async function deleteFiles(paths: string[]): Promise<void> {
   return invoke("delete_files", { paths });
 }
 
+export async function copyFilesWithProgress(sources: string[], destDir: string): Promise<string[]> {
+  return invoke("copy_files_with_progress", { sources, destDir });
+}
+
+export async function cancelOperation(): Promise<void> {
+  return invoke("cancel_operation");
+}
+
 export async function undoOperation(): Promise<string> {
   return invoke("undo_operation");
 }

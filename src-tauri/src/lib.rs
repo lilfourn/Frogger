@@ -9,7 +9,8 @@ mod state;
 use commands::file_commands;
 use data::migrations;
 use state::AppState;
-use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
 
 fn init_db(app: &tauri::App) -> Result<rusqlite::Connection, Box<dyn std::error::Error>> {
     let app_dir = app
@@ -38,6 +39,7 @@ pub fn run() {
             let conn = init_db(app)?;
             app.manage(AppState {
                 db: Mutex::new(conn),
+                cancel_flag: Arc::new(AtomicBool::new(false)),
             });
             Ok(())
         })
@@ -50,6 +52,8 @@ pub fn run() {
             file_commands::move_files,
             file_commands::copy_files,
             file_commands::delete_files,
+            file_commands::copy_files_with_progress,
+            file_commands::cancel_operation,
             file_commands::undo_operation,
             file_commands::redo_operation,
         ])

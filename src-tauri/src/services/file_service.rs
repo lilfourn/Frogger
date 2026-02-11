@@ -1,7 +1,11 @@
 use crate::error::AppError;
 use crate::shell::safety::{validate_not_protected, validate_path};
+use serde::Serialize;
 use std::fs;
+use std::io::{Read, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 pub fn create_dir(path: &str) -> Result<(), AppError> {
     validate_path(path)?;
@@ -92,6 +96,164 @@ fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<(), AppError> {
         }
     }
     Ok(())
+}
+
+#[derive(Clone, Serialize)]
+pub struct ProgressEvent {
+    pub bytes_copied: u64,
+    pub total_bytes: u64,
+    pub current_file: String,
+    pub percent: f64,
+}
+
+fn calculate_total_size(paths: &[String]) -> Result<u64, AppError> {
+    let mut total = 0u64;
+    for src in paths {
+        let path = Path::new(src);
+        if path.is_dir() {
+            for entry in walkdir::WalkDir::new(path).into_iter().flatten() {
+                if entry.file_type().is_file() {
+                    total += entry.metadata().map(|m| m.len()).unwrap_or(0);
+                }
+            }
+        } else {
+            total += fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        }
+    }
+    Ok(total)
+}
+
+const COPY_BUF_SIZE: usize = 64 * 1024;
+
+fn copy_file_with_progress(
+    src: &Path,
+    dest: &Path,
+    bytes_copied: &mut u64,
+    total_bytes: u64,
+    cancel: &Arc<AtomicBool>,
+    emit: &dyn Fn(ProgressEvent),
+) -> Result<(), AppError> {
+    let mut reader = fs::File::open(src)?;
+    let mut writer = fs::File::create(dest)?;
+    let mut buf = vec![0u8; COPY_BUF_SIZE];
+
+    loop {
+        if cancel.load(Ordering::Relaxed) {
+            let _ = fs::remove_file(dest);
+            return Err(AppError::General("operation cancelled".to_string()));
+        }
+
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        writer.write_all(&buf[..n])?;
+        *bytes_copied += n as u64;
+
+        emit(ProgressEvent {
+            bytes_copied: *bytes_copied,
+            total_bytes,
+            current_file: src
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string(),
+            percent: if total_bytes > 0 {
+                (*bytes_copied as f64 / total_bytes as f64) * 100.0
+            } else {
+                0.0
+            },
+        });
+    }
+    Ok(())
+}
+
+fn copy_dir_with_progress(
+    src: &Path,
+    dest: &Path,
+    bytes_copied: &mut u64,
+    total_bytes: u64,
+    cancel: &Arc<AtomicBool>,
+    emit: &dyn Fn(ProgressEvent),
+) -> Result<(), AppError> {
+    fs::create_dir_all(dest)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let dest_child = dest.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_with_progress(
+                &entry.path(),
+                &dest_child,
+                bytes_copied,
+                total_bytes,
+                cancel,
+                emit,
+            )?;
+        } else {
+            copy_file_with_progress(
+                &entry.path(),
+                &dest_child,
+                bytes_copied,
+                total_bytes,
+                cancel,
+                emit,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+pub fn copy_files_with_progress(
+    sources: &[String],
+    dest_dir: &str,
+    cancel: &Arc<AtomicBool>,
+    emit: impl Fn(ProgressEvent),
+) -> Result<Vec<String>, AppError> {
+    validate_path(dest_dir)?;
+    if !Path::new(dest_dir).is_dir() {
+        return Err(AppError::General(format!(
+            "destination is not a directory: {dest_dir}"
+        )));
+    }
+
+    let total_bytes = calculate_total_size(sources)?;
+    let mut bytes_copied = 0u64;
+    let mut dest_paths = Vec::new();
+
+    for src in sources {
+        validate_path(src)?;
+        if cancel.load(Ordering::Relaxed) {
+            return Err(AppError::General("operation cancelled".to_string()));
+        }
+
+        let src_path = Path::new(src);
+        let file_name = src_path
+            .file_name()
+            .ok_or_else(|| AppError::General(format!("invalid source path: {src}")))?;
+        let dest = Path::new(dest_dir).join(file_name);
+
+        if src_path.is_dir() {
+            copy_dir_with_progress(
+                src_path,
+                &dest,
+                &mut bytes_copied,
+                total_bytes,
+                &cancel,
+                &emit,
+            )?;
+        } else {
+            copy_file_with_progress(
+                src_path,
+                &dest,
+                &mut bytes_copied,
+                total_bytes,
+                &cancel,
+                &emit,
+            )?;
+        }
+        dest_paths.push(dest.to_string_lossy().to_string());
+    }
+    Ok(dest_paths)
 }
 
 pub fn trash_dir() -> Result<std::path::PathBuf, AppError> {
@@ -288,5 +450,101 @@ mod tests {
     fn test_rename_protected_path_rejected() {
         let result = rename("/bin/ls", "/tmp/ls_stolen");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_copy_with_progress_emits_events() {
+        let base = temp_dir("copy_progress");
+        let src = base.join("big.txt");
+        let dest_dir = base.join("target");
+        fs::create_dir_all(&dest_dir).unwrap();
+
+        let data = vec![b'x'; 256 * 1024]; // 256KB
+        File::create(&src).unwrap().write_all(&data).unwrap();
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let events = std::sync::Mutex::new(Vec::new());
+
+        let results = copy_files_with_progress(
+            &[src.to_string_lossy().to_string()],
+            &dest_dir.to_string_lossy(),
+            &cancel,
+            |evt| events.lock().unwrap().push(evt),
+        )
+        .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert!(Path::new(&results[0]).exists());
+
+        let captured = events.lock().unwrap();
+        assert!(!captured.is_empty());
+        let last = captured.last().unwrap();
+        assert!((last.percent - 100.0).abs() < 0.01);
+        assert_eq!(last.total_bytes, 256 * 1024);
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn test_copy_with_progress_cancel() {
+        let base = temp_dir("copy_cancel");
+        let src = base.join("cancel_me.txt");
+        let dest_dir = base.join("target");
+        fs::create_dir_all(&dest_dir).unwrap();
+
+        let data = vec![b'y'; 256 * 1024];
+        File::create(&src).unwrap().write_all(&data).unwrap();
+
+        let cancel = Arc::new(AtomicBool::new(true)); // pre-cancelled
+
+        let result = copy_files_with_progress(
+            &[src.to_string_lossy().to_string()],
+            &dest_dir.to_string_lossy(),
+            &cancel,
+            |_| {},
+        );
+
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("cancelled"));
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn test_copy_dir_with_progress() {
+        let base = temp_dir("copy_dir_progress");
+        let src_dir = base.join("source_dir");
+        let dest_dir = base.join("target");
+        fs::create_dir_all(&src_dir).unwrap();
+        fs::create_dir_all(&dest_dir).unwrap();
+        File::create(src_dir.join("a.txt"))
+            .unwrap()
+            .write_all(b"aaa")
+            .unwrap();
+        File::create(src_dir.join("b.txt"))
+            .unwrap()
+            .write_all(b"bbb")
+            .unwrap();
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let events = std::sync::Mutex::new(Vec::new());
+
+        let results = copy_files_with_progress(
+            &[src_dir.to_string_lossy().to_string()],
+            &dest_dir.to_string_lossy(),
+            &cancel,
+            |evt| events.lock().unwrap().push(evt),
+        )
+        .unwrap();
+
+        assert_eq!(results.len(), 1);
+        assert!(Path::new(&results[0]).join("a.txt").exists());
+        assert!(Path::new(&results[0]).join("b.txt").exists());
+
+        let captured = events.lock().unwrap();
+        assert!(captured.len() >= 2);
+
+        let _ = fs::remove_dir_all(&base);
     }
 }
