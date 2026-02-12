@@ -172,7 +172,7 @@ const SKIP_EXTENSIONS: &[&str] = &[
     "ttf", "otf", "woff", "woff2", "eot",
 ];
 
-fn should_skip(entry: &walkdir::DirEntry) -> bool {
+fn should_skip_dir(entry: &walkdir::DirEntry) -> bool {
     let name = entry.file_name().to_string_lossy();
 
     if name.starts_with('.') {
@@ -193,18 +193,13 @@ fn should_skip(entry: &walkdir::DirEntry) -> bool {
         }
     }
 
-    if entry.file_type().is_file() {
-        if let Some(ext) = Path::new(name.as_ref())
-            .extension()
-            .and_then(|e| e.to_str())
-        {
-            if SKIP_EXTENSIONS.contains(&ext) {
-                return true;
-            }
-        }
-    }
-
     false
+}
+
+fn has_skip_extension(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|ext| SKIP_EXTENSIONS.contains(&ext))
 }
 
 pub fn scan_directory_with_progress<F>(conn: &Connection, directory: &str, on_progress: F)
@@ -221,7 +216,7 @@ where
             .min_depth(1)
             .max_depth(5)
             .into_iter()
-            .filter_entry(|e| !should_skip(e))
+            .filter_entry(|e| !should_skip_dir(e))
             .filter_map(|e| e.ok())
     };
 
@@ -238,12 +233,13 @@ where
         if let Some(file_entry) = file_entry_from_path(path) {
             let modified = file_entry.modified_at.as_deref().unwrap_or("");
             if !repository::needs_reindex(conn, &file_entry.path, modified) {
-                if processed % 100 == 0 {
-                    on_progress(processed, total);
-                }
-                continue;
+                // already indexed and unchanged
+            } else if has_skip_extension(path) {
+                let _ = repository::insert_file(conn, &file_entry);
+                let _ = repository::insert_fts(conn, &file_entry.path, &file_entry.name, "");
+            } else {
+                process_event(conn, path);
             }
-            process_event(conn, path);
         }
         if processed % 50 == 0 {
             let _ = conn.execute_batch("COMMIT");
@@ -508,6 +504,30 @@ mod tests {
             )
             .unwrap();
         assert_eq!(fts_count_after, 1);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_scan_indexes_skipped_extension_by_filename() {
+        let dir = std::env::temp_dir().join("frogger_test_scan_skip_ext");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("song.mp3"), &[0u8; 64]).unwrap();
+        fs::write(dir.join("archive.zip"), &[0u8; 64]).unwrap();
+        fs::write(dir.join("notes.txt"), "hello").unwrap();
+
+        let conn = test_conn();
+        scan_directory(&conn, dir.to_str().unwrap());
+
+        let fts_mp3 = repository::search_fts(&conn, "song", 10).unwrap();
+        assert!(!fts_mp3.is_empty(), "mp3 should be searchable by filename");
+
+        let fts_zip = repository::search_fts(&conn, "archive", 10).unwrap();
+        assert!(!fts_zip.is_empty(), "zip should be searchable by filename");
+
+        let fts_txt = repository::search_fts(&conn, "notes", 10).unwrap();
+        assert!(!fts_txt.is_empty(), "txt should be searchable by filename");
 
         let _ = fs::remove_dir_all(&dir);
     }

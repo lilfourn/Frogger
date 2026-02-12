@@ -251,7 +251,7 @@ pub fn search_fts(
     limit: usize,
 ) -> Result<Vec<FtsResult>, AppError> {
     let mut stmt = conn.prepare(
-        "SELECT file_path FROM files_fts WHERE files_fts MATCH ?1 ORDER BY rank LIMIT ?2",
+        "SELECT file_path FROM files_fts WHERE files_fts MATCH ?1 ORDER BY bm25(files_fts, 2.0, 10.0, 1.0) LIMIT ?2",
     )?;
     let results = stmt
         .query_map(params![query, limit as i64], |row| {
@@ -529,6 +529,24 @@ mod tests {
         let results = search_fts(&conn, "instructions", 10).unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].file_path, "/home/user/readme.md");
+    }
+
+    #[test]
+    fn test_fts_filename_ranked_above_content() {
+        let conn = setup_db();
+
+        insert_fts(
+            &conn,
+            "/docs/report.txt",
+            "report.txt",
+            "contains frogger reference",
+        )
+        .unwrap();
+        insert_fts(&conn, "/projects/frogger.md", "frogger.md", "project notes").unwrap();
+
+        let results = search_fts(&conn, "frogger", 10).unwrap();
+        assert!(results.len() >= 2);
+        assert_eq!(results[0].file_path, "/projects/frogger.md");
     }
 
     #[test]
