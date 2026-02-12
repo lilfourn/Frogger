@@ -8,11 +8,13 @@ import { FileView } from "./components/file-view/FileView";
 
 import { TabBar } from "./components/tabs/TabBar";
 import { QuickLookPanel } from "./components/quick-look/QuickLookPanel";
+import { SearchBar } from "./components/search/SearchBar";
 import { useTheme } from "./hooks/useTheme";
 import { useFileOperations } from "./hooks/useFileOperations";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useQuickLook } from "./hooks/useQuickLook";
 import { useSettingsStore } from "./stores/settingsStore";
+import { useSearchStore } from "./stores/searchStore";
 
 function App() {
   useTheme();
@@ -30,6 +32,7 @@ function App() {
   const setLoading = useFileStore((s) => s.setLoading);
 
   const toggleHiddenFiles = useSettingsStore((s) => s.toggleHiddenFiles);
+  const openSearch = useSearchStore((s) => s.open);
   const { undo, redo, deleteFiles, rename, createDir } = useFileOperations();
   const quickLook = useQuickLook();
 
@@ -72,6 +75,8 @@ function App() {
       },
       { key: "Backspace", handler: goUp },
       { key: ".", meta: true, shift: true, handler: toggleHiddenFiles },
+      { key: "f", meta: true, handler: openSearch },
+      { key: "p", meta: true, handler: openSearch },
     ],
     [
       undo,
@@ -86,6 +91,7 @@ function App() {
       quickLook,
       goUp,
       toggleHiddenFiles,
+      openSearch,
     ],
   );
 
@@ -140,6 +146,7 @@ function App() {
         previewType={quickLook.previewType}
         onClose={quickLook.close}
       />
+      <SearchBar />
     </>
   );
 }
