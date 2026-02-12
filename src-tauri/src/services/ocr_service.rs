@@ -6,6 +6,7 @@ use crate::data::repository;
 use crate::error::AppError;
 
 const OCR_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "tiff", "bmp", "gif", "webp"];
+const MIN_OCR_FILE_SIZE: u64 = 10_000;
 
 pub fn is_ocr_candidate(path: &Path) -> bool {
     path.extension()
@@ -41,6 +42,12 @@ pub fn process_file(
 ) -> Result<Option<String>, AppError> {
     if !is_ocr_candidate(Path::new(file_path)) {
         return Ok(None);
+    }
+
+    if let Ok(meta) = std::fs::metadata(file_path) {
+        if meta.len() < MIN_OCR_FILE_SIZE {
+            return Ok(None);
+        }
     }
 
     if !should_process(conn, file_path, modified_at) {
@@ -130,6 +137,27 @@ mod tests {
 
         let newer = "2025-06-01T00:00:00Z";
         assert!(should_process(&conn, path, newer));
+    }
+
+    #[test]
+    fn test_ocr_skips_small_image() {
+        let conn = test_conn();
+        let dir = std::env::temp_dir().join("frogger_test_ocr_small");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let tiny = dir.join("tiny.png");
+        std::fs::write(&tiny, &[0u8; 100]).unwrap();
+
+        let result = process_file(
+            &conn,
+            tiny.to_str().unwrap(),
+            "tiny.png",
+            "2025-01-01T00:00:00Z",
+        )
+        .unwrap();
+        assert!(result.is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

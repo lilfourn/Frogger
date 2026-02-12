@@ -56,18 +56,15 @@ pub fn process_event(conn: &Connection, path: &Path) {
                     .unwrap_or(None)
                     .unwrap_or_default();
                 let _ = repository::insert_fts(conn, &entry.path, &entry.name, &ocr_text);
-                let ocr_ref = if ocr_text.is_empty() {
-                    None
-                } else {
-                    Some(ocr_text.as_str())
-                };
-                let _ = embedding_service::embed_file(
-                    conn,
-                    &entry.path,
-                    &entry.name,
-                    entry.extension.as_deref(),
-                    ocr_ref,
-                );
+                if !ocr_text.is_empty() {
+                    let _ = embedding_service::embed_file(
+                        conn,
+                        &entry.path,
+                        &entry.name,
+                        entry.extension.as_deref(),
+                        Some(ocr_text.as_str()),
+                    );
+                }
             }
         }
     } else {
@@ -164,7 +161,15 @@ const SKIP_DIRS: &[&str] = &[
 ];
 
 const SKIP_EXTENSIONS: &[&str] = &[
-    "o", "a", "dylib", "so", "dll", "exe", "class", "pyc", "pyo", "wasm", "map",
+    // Compiled / binary
+    "o", "a", "dylib", "so", "dll", "exe", "class", "pyc", "pyo", "wasm",
+    // Source maps / lockfiles / data
+    "map", "lock", "bin", "dat", "db", "sqlite", "sqlite3", // Icons
+    "ico", "icns", "cur", // Archives
+    "zip", "tar", "gz", "bz2", "xz", "7z", "rar", "dmg", "iso", // Media
+    "mp3", "mp4", "mov", "avi", "mkv", "flac", "wav", "m4a", "aac", "ogg", "m4v", "wmv",
+    // Fonts
+    "ttf", "otf", "woff", "woff2", "eot",
 ];
 
 fn should_skip(entry: &walkdir::DirEntry) -> bool {
@@ -225,6 +230,8 @@ where
 
     on_progress(0, total);
 
+    let _ = conn.execute_batch("BEGIN");
+
     for entry in walker() {
         processed += 1;
         let path = entry.path();
@@ -238,11 +245,14 @@ where
             }
             process_event(conn, path);
         }
-        if processed % 100 == 0 {
+        if processed % 50 == 0 {
+            let _ = conn.execute_batch("COMMIT");
+            let _ = conn.execute_batch("BEGIN");
             on_progress(processed, total);
         }
     }
 
+    let _ = conn.execute_batch("COMMIT");
     on_progress(total, total);
 }
 
