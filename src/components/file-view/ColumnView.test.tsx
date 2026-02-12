@@ -17,25 +17,56 @@ function makeEntry(name: string, isDir = false): FileEntry {
   };
 }
 
+const defaultProps = {
+  onSelect: vi.fn(),
+  onOpen: vi.fn(),
+  onItemContextMenu: vi.fn(),
+  selectedPaths: new Set<string>(),
+};
+
 describe("ColumnView", () => {
   const entries = [makeEntry("docs", true), makeEntry("file.txt")];
 
   it("renders entries in a column", () => {
-    render(<ColumnView entries={entries} onNavigate={vi.fn()} />);
+    render(<ColumnView entries={entries} {...defaultProps} />);
     expect(screen.getByTestId("column-view")).toBeInTheDocument();
     expect(screen.getByText("docs")).toBeInTheDocument();
     expect(screen.getByText("file.txt")).toBeInTheDocument();
   });
 
-  it("calls onNavigate when clicking a directory", () => {
-    const onNavigate = vi.fn();
-    render(<ColumnView entries={entries} onNavigate={onNavigate} />);
+  it("calls onSelect on single click", () => {
+    const onSelect = vi.fn();
+    render(<ColumnView entries={entries} {...defaultProps} onSelect={onSelect} />);
     fireEvent.click(screen.getByText("docs"));
-    expect(onNavigate).toHaveBeenCalledWith(entries[0]);
+    expect(onSelect).toHaveBeenCalledWith(entries[0]);
+  });
+
+  it("calls onOpen on double click", () => {
+    const onOpen = vi.fn();
+    render(<ColumnView entries={entries} {...defaultProps} onOpen={onOpen} />);
+    fireEvent.doubleClick(screen.getByText("docs"));
+    expect(onOpen).toHaveBeenCalledWith(entries[0]);
+  });
+
+  it("calls onItemContextMenu on right click", () => {
+    const onItemContextMenu = vi.fn();
+    render(
+      <ColumnView entries={entries} {...defaultProps} onItemContextMenu={onItemContextMenu} />,
+    );
+    fireEvent.contextMenu(screen.getByText("file.txt"));
+    expect(onItemContextMenu).toHaveBeenCalled();
+    expect(onItemContextMenu.mock.calls[0][1]).toEqual(entries[1]);
+  });
+
+  it("shows selected styling for selected items", () => {
+    const selectedPaths = new Set(["/docs"]);
+    render(<ColumnView entries={entries} {...defaultProps} selectedPaths={selectedPaths} />);
+    const dirRow = screen.getByText("docs").closest("[role='listitem']");
+    expect(dirRow?.className).toContain("bg-[var(--color-accent)]/10");
   });
 
   it("shows chevron indicator for directories", () => {
-    render(<ColumnView entries={entries} onNavigate={vi.fn()} />);
+    render(<ColumnView entries={entries} {...defaultProps} />);
     const dirRow = screen.getByText("docs").closest("[role='listitem']");
     expect(dirRow?.textContent).toContain(">");
   });

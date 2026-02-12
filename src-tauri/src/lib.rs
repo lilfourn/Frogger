@@ -6,19 +6,17 @@ mod services;
 mod shell;
 mod state;
 
-use commands::{file_commands, indexing_commands, search_commands};
+use commands::{
+    chat_commands, file_commands, indexing_commands, search_commands, settings_commands,
+};
 use data::migrations;
-use services::indexing_service;
-use state::AppState;
+use state::{AppState, IndexingProgressState};
+use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 fn register_sqlite_extensions() {
-    unsafe {
-        rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
-            sqlite_vec::sqlite3_vec_init as *const (),
-        )));
-    }
+    data::register_sqlite_vec_extension();
 }
 
 fn init_db(
@@ -36,10 +34,19 @@ fn init_db(
     Ok((conn, db_path))
 }
 
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let _guard = sentry::init((
+        "https://fddb82a3bd06afcc7d48e9c9938c132e@o4510873965887488.ingest.us.sentry.io/4510873968246784",
+        sentry::ClientOptions {
+            release: sentry::release_name!(),
+            send_default_pii: true,
+            ..Default::default()
+        },
+    ));
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
@@ -53,30 +60,15 @@ pub fn run() {
                 db: Mutex::new(conn),
                 db_path: db_path.clone(),
                 cancel_flag: Arc::new(AtomicBool::new(false)),
+                organize_cancel_flags: Mutex::new(HashMap::new()),
                 watcher_handle: Mutex::new(None),
-            });
-
-            let bg_db_path = db_path;
-            let handle = app.handle().clone();
-            tauri::async_runtime::spawn_blocking(move || {
-                let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/"));
-                if let Ok(bg_conn) = rusqlite::Connection::open(&bg_db_path) {
-                    let _ = migrations::run_migrations(&bg_conn);
-                    indexing_service::scan_directory_with_progress(
-                        &bg_conn,
-                        &home.to_string_lossy(),
-                        |processed, total| {
-                            let _ = handle.emit(
-                                "indexing-progress",
-                                serde_json::json!({
-                                    "processed": processed,
-                                    "total": total,
-                                    "status": if processed >= total { "done" } else { "active" }
-                                }),
-                            );
-                        },
-                    );
-                }
+                indexing_status: Arc::new(Mutex::new(IndexingProgressState {
+                    processed: 0,
+                    total: 0,
+                    status: "done".to_string(),
+                })),
+                permission_policy_cache: std::sync::RwLock::new(None),
+                permission_policy_version: std::sync::atomic::AtomicU64::new(1),
             });
 
             Ok(())
@@ -94,9 +86,38 @@ pub fn run() {
             file_commands::cancel_operation,
             file_commands::undo_operation,
             file_commands::redo_operation,
+            file_commands::read_file_text,
+            file_commands::find_large_files,
+            file_commands::find_old_files,
+            file_commands::find_duplicates,
+            file_commands::detect_project_type,
+            file_commands::open_file,
             indexing_commands::start_indexing,
+            indexing_commands::get_indexing_status,
             indexing_commands::stop_indexing,
             search_commands::search,
+            settings_commands::save_api_key,
+            settings_commands::has_api_key,
+            settings_commands::delete_api_key,
+            settings_commands::get_setting,
+            settings_commands::set_setting,
+            settings_commands::get_permission_scopes,
+            settings_commands::check_permission_request,
+            settings_commands::upsert_permission_scope,
+            settings_commands::get_permission_defaults,
+            settings_commands::set_permission_defaults,
+            settings_commands::delete_permission_scope,
+            settings_commands::normalize_permission_scopes,
+            settings_commands::resolve_permission_grant_targets,
+            settings_commands::get_audit_log,
+            chat_commands::send_chat,
+            chat_commands::send_organize_plan,
+            chat_commands::send_organize_execute,
+            chat_commands::send_organize_apply,
+            chat_commands::cancel_organize,
+            chat_commands::get_chat_history,
+            chat_commands::clear_chat_history,
+            chat_commands::new_chat_session,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

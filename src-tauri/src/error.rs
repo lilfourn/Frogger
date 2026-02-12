@@ -24,6 +24,13 @@ pub enum AppError {
     Watcher(String),
 }
 
+impl AppError {
+    pub fn capture(self) -> Self {
+        sentry::capture_message(&self.to_string(), sentry::Level::Error);
+        self
+    }
+}
+
 impl Serialize for AppError {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where

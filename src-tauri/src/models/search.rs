@@ -13,6 +13,7 @@ pub struct OcrRecord {
 pub struct SearchResult {
     pub file_path: String,
     pub file_name: String,
+    pub is_directory: bool,
     pub score: f64,
     pub match_source: String,
     pub snippet: Option<String>,

@@ -1,4 +1,8 @@
 import type { PreviewType } from "../../hooks/useQuickLook";
+import { CodePreview } from "./CodePreview";
+import { MarkdownPreview } from "./MarkdownPreview";
+import { PdfPreview } from "./PdfPreview";
+import { AudioPreview } from "./AudioPreview";
 
 interface QuickLookPanelProps {
   isOpen: boolean;
@@ -28,21 +32,17 @@ function PreviewContent({ filePath, previewType }: { filePath: string; previewTy
     case "video":
       return (
         <div className="flex h-full items-center justify-center p-4">
-          <video
-            src={`asset://localhost/${filePath}`}
-            controls
-            className="max-h-full max-w-full"
-          />
+          <video src={`asset://localhost/${filePath}`} controls className="max-h-full max-w-full" />
         </div>
       );
     case "code":
+      return <CodePreview filePath={filePath} />;
     case "markdown":
+      return <MarkdownPreview filePath={filePath} />;
     case "pdf":
-      return (
-        <div className="flex h-full items-center justify-center text-sm text-[var(--color-text-secondary)]">
-          Preview for .{filePath.split(".").pop()} files coming soon
-        </div>
-      );
+      return <PdfPreview filePath={filePath} />;
+    case "audio":
+      return <AudioPreview filePath={filePath} />;
     default:
       return (
         <div className="flex h-full items-center justify-center text-sm text-[var(--color-text-secondary)]">

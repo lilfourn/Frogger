@@ -60,11 +60,7 @@ mod tests {
     use crate::data::migrations;
 
     fn test_conn() -> Connection {
-        unsafe {
-            rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
-                sqlite_vec::sqlite3_vec_init as *const (),
-            )));
-        }
+        crate::data::register_sqlite_vec_extension();
         let conn = Connection::open_in_memory().unwrap();
         migrations::run_migrations(&conn).unwrap();
         conn

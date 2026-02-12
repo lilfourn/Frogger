@@ -6,15 +6,19 @@ import { StatusBar } from "./StatusBar";
 interface AppLayoutProps {
   sidebar: ReactNode;
   main: ReactNode;
+  rightPanel?: ReactNode;
   itemCount?: number;
   currentPath?: string;
+  onSettingsClick?: () => void;
 }
 
 export function AppLayout({
   sidebar,
   main,
+  rightPanel,
   itemCount = 0,
   currentPath,
+  onSettingsClick,
 }: AppLayoutProps) {
   const sidebarVisible = useSettingsStore((s) => s.sidebarVisible);
   const sidebarWidth = useSettingsStore((s) => s.sidebarWidth);
@@ -37,9 +41,15 @@ export function AppLayout({
         <main data-testid="main-panel" className="flex-1 overflow-auto">
           {main}
         </main>
+
+        {rightPanel}
       </div>
 
-      <StatusBar itemCount={itemCount} currentPath={currentPath} />
+      <StatusBar
+        itemCount={itemCount}
+        currentPath={currentPath}
+        onSettingsClick={onSettingsClick}
+      />
     </div>
   );
 }

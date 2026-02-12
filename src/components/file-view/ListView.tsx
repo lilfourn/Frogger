@@ -26,11 +26,21 @@ function getKind(entry: FileEntry): string {
 
 interface ListViewProps {
   entries: FileEntry[];
-  onNavigate: (entry: FileEntry) => void;
+  onSelect: (entry: FileEntry) => void;
+  onOpen: (entry: FileEntry) => void;
+  onItemContextMenu: (e: React.MouseEvent, entry: FileEntry) => void;
+  selectedPaths: Set<string>;
   focusIndex?: number;
 }
 
-export function ListView({ entries, onNavigate, focusIndex = -1 }: ListViewProps) {
+export function ListView({
+  entries,
+  onSelect,
+  onOpen,
+  onItemContextMenu,
+  selectedPaths,
+  focusIndex = -1,
+}: ListViewProps) {
   const sortBy = useFileStore((s) => s.sortBy);
   const sortDirection = useFileStore((s) => s.sortDirection);
   const setSortBy = useFileStore((s) => s.setSortBy);
@@ -69,11 +79,11 @@ export function ListView({ entries, onNavigate, focusIndex = -1 }: ListViewProps
             key={entry.path}
             role="listitem"
             className={`flex cursor-pointer items-center px-3 py-1.5 hover:bg-[var(--color-bg-secondary)] ${
-              idx === focusIndex
-                ? "bg-[var(--color-accent)]/10 outline outline-2 outline-[var(--color-accent)]"
-                : ""
-            }`}
-            onClick={() => onNavigate(entry)}
+              selectedPaths.has(entry.path) ? "bg-[var(--color-accent)]/10" : ""
+            } ${idx === focusIndex ? "outline outline-2 outline-[var(--color-accent)]" : ""}`}
+            onClick={() => onSelect(entry)}
+            onDoubleClick={() => onOpen(entry)}
+            onContextMenu={(e) => onItemContextMenu(e, entry)}
           >
             <div className="flex flex-1 items-center gap-2 overflow-hidden">
               <FileIcon isDirectory={entry.is_directory} size={16} />

@@ -1,14 +1,35 @@
 import { useState, useCallback, useMemo } from "react";
 
-export type PreviewType = "image" | "code" | "markdown" | "pdf" | "video" | "unknown";
+export type PreviewType = "image" | "code" | "markdown" | "pdf" | "video" | "audio" | "unknown";
 
 const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg", "bmp", "ico"]);
 const CODE_EXTS = new Set([
-  "ts", "tsx", "js", "jsx", "json", "html", "css", "scss",
-  "py", "rs", "go", "java", "c", "cpp", "h", "rb", "sh",
-  "yaml", "yml", "toml", "xml", "sql", "graphql",
+  "ts",
+  "tsx",
+  "js",
+  "jsx",
+  "json",
+  "html",
+  "css",
+  "scss",
+  "py",
+  "rs",
+  "go",
+  "java",
+  "c",
+  "cpp",
+  "h",
+  "rb",
+  "sh",
+  "yaml",
+  "yml",
+  "toml",
+  "xml",
+  "sql",
+  "graphql",
 ]);
 const VIDEO_EXTS = new Set(["mp4", "webm", "ogg", "mov"]);
+const AUDIO_EXTS = new Set(["mp3", "wav", "flac", "aac", "m4a", "ogg", "wma"]);
 
 function getExtension(path: string): string {
   const parts = path.split(".");
@@ -22,6 +43,7 @@ function detectType(path: string | null): PreviewType {
   if (ext === "md" || ext === "markdown") return "markdown";
   if (ext === "pdf") return "pdf";
   if (VIDEO_EXTS.has(ext)) return "video";
+  if (AUDIO_EXTS.has(ext)) return "audio";
   if (CODE_EXTS.has(ext)) return "code";
   return "unknown";
 }

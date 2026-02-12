@@ -4,6 +4,7 @@ use rusqlite::Connection;
 
 use crate::data::repository;
 use crate::error::AppError;
+use crate::services::permission_service::{self, PermissionCapability};
 
 const OCR_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "tiff", "bmp", "gif", "webp"];
 const MIN_OCR_FILE_SIZE: u64 = 10_000;
@@ -40,6 +41,10 @@ pub fn process_file(
     file_name: &str,
     modified_at: &str,
 ) -> Result<Option<String>, AppError> {
+    if permission_service::enforce(conn, file_path, PermissionCapability::Ocr, false).is_err() {
+        return Ok(None);
+    }
+
     if !is_ocr_candidate(Path::new(file_path)) {
         return Ok(None);
     }
@@ -73,13 +78,13 @@ mod tests {
     use std::path::PathBuf;
 
     fn test_conn() -> Connection {
-        unsafe {
-            rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
-                sqlite_vec::sqlite3_vec_init as *const (),
-            )));
-        }
+        crate::data::register_sqlite_vec_extension();
         let conn = Connection::open_in_memory().unwrap();
         migrations::run_migrations(&conn).unwrap();
+        repository::set_setting(&conn, "permission_default_content_scan", "allow").unwrap();
+        repository::set_setting(&conn, "permission_default_modification", "allow").unwrap();
+        repository::set_setting(&conn, "permission_default_ocr", "allow").unwrap();
+        repository::set_setting(&conn, "permission_default_indexing", "allow").unwrap();
         conn
     }
 

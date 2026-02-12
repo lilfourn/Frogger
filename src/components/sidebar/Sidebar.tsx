@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Home, Monitor, FileText, Download, HardDrive, Clock, type LucideIcon } from "lucide-react";
 import { useFileStore } from "../../stores/fileStore";
 import { getHomeDir, getMountedVolumes } from "../../services/fileService";
+import { SmartFolders } from "./SmartFolders";
 import type { VolumeInfo } from "../../types/volume";
 
 interface Bookmark {
@@ -29,10 +30,10 @@ export function Sidebar() {
   useEffect(() => {
     getHomeDir()
       .then((home) => setBookmarks(buildBookmarks(home)))
-      .catch(() => {});
+      .catch((err) => console.error("[Sidebar] Failed to get home dir:", err));
     getMountedVolumes()
       .then(setVolumes)
-      .catch(() => {});
+      .catch((err) => console.error("[Sidebar] Failed to get volumes:", err));
   }, []);
 
   return (
@@ -74,6 +75,8 @@ export function Sidebar() {
           </div>
         </section>
       )}
+
+      <SmartFolders />
 
       {recentPaths.length > 0 && (
         <section>

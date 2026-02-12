@@ -2,6 +2,7 @@ use crate::data::repository;
 use crate::error::AppError;
 use crate::models::operation::{OperationRecord, OperationType};
 use crate::services::file_service;
+use crate::services::permission_service::{self, PermissionCapability};
 use rusqlite::Connection;
 
 pub fn record_operation(
@@ -18,7 +19,7 @@ pub fn record_operation(
         forward_command: forward_cmd.to_string(),
         inverse_command: inverse_cmd.to_string(),
         affected_paths: affected_paths.to_vec(),
-        metadata: metadata.map(|s| serde_json::from_str(s)).transpose()?,
+        metadata: metadata.map(serde_json::from_str).transpose()?,
         executed_at: chrono::Utc::now().to_rfc3339(),
         undone: false,
     };
@@ -26,33 +27,44 @@ pub fn record_operation(
     Ok(())
 }
 
-pub fn undo(conn: &Connection) -> Result<String, AppError> {
+pub fn undo(conn: &Connection, allow_once: bool) -> Result<String, AppError> {
     let op = repository::get_latest_undoable(conn)?
         .ok_or_else(|| AppError::General("nothing to undo".to_string()))?;
 
-    execute_inverse(&op)?;
+    execute_inverse(conn, &op, allow_once)?;
     repository::mark_undone(conn, &op.operation_id)?;
 
     Ok(format!("undone: {} {}", op.operation_type, op.operation_id))
 }
 
-pub fn redo(conn: &Connection) -> Result<String, AppError> {
+pub fn redo(conn: &Connection, allow_once: bool) -> Result<String, AppError> {
     let op = repository::get_latest_redoable(conn)?
         .ok_or_else(|| AppError::General("nothing to redo".to_string()))?;
 
-    execute_forward(&op)?;
+    execute_forward(conn, &op, allow_once)?;
     repository::mark_not_undone(conn, &op.operation_id)?;
 
     Ok(format!("redone: {} {}", op.operation_type, op.operation_id))
 }
 
-fn execute_inverse(op: &OperationRecord) -> Result<(), AppError> {
+fn execute_inverse(
+    conn: &Connection,
+    op: &OperationRecord,
+    allow_once: bool,
+) -> Result<(), AppError> {
     let meta = op.metadata.clone().unwrap_or(serde_json::json!({}));
 
     match op.operation_type {
         OperationType::Rename => {
             let src = meta["destination"].as_str().unwrap_or("");
             let dest = meta["source"].as_str().unwrap_or("");
+            permission_service::enforce(conn, src, PermissionCapability::Modification, allow_once)?;
+            permission_service::enforce(
+                conn,
+                dest,
+                PermissionCapability::Modification,
+                allow_once,
+            )?;
             file_service::rename(src, dest)?;
         }
         OperationType::Move => {
@@ -65,6 +77,18 @@ fn execute_inverse(op: &OperationRecord) -> Result<(), AppError> {
                     .unwrap()
                     .to_string_lossy()
                     .to_string();
+                permission_service::enforce(
+                    conn,
+                    &dest,
+                    PermissionCapability::Modification,
+                    allow_once,
+                )?;
+                permission_service::enforce(
+                    conn,
+                    &src_parent,
+                    PermissionCapability::Modification,
+                    allow_once,
+                )?;
                 file_service::move_files(&[dest_path.to_string_lossy().to_string()], &src_parent)?;
             }
         }
@@ -72,6 +96,12 @@ fn execute_inverse(op: &OperationRecord) -> Result<(), AppError> {
             let copied: Vec<String> =
                 serde_json::from_value(meta["copied_paths"].clone()).unwrap_or_default();
             for path in copied {
+                permission_service::enforce(
+                    conn,
+                    &path,
+                    PermissionCapability::Modification,
+                    allow_once,
+                )?;
                 let p = std::path::Path::new(&path);
                 if p.is_dir() {
                     std::fs::remove_dir_all(p)?;
@@ -86,11 +116,23 @@ fn execute_inverse(op: &OperationRecord) -> Result<(), AppError> {
             for item in items {
                 let trash = item["trash_path"].as_str().unwrap_or("");
                 let original = item["original_path"].as_str().unwrap_or("");
+                permission_service::enforce(
+                    conn,
+                    original,
+                    PermissionCapability::Modification,
+                    allow_once,
+                )?;
                 file_service::restore_from_trash(trash, original)?;
             }
         }
         OperationType::CreateDir => {
             let path = meta["path"].as_str().unwrap_or("");
+            permission_service::enforce(
+                conn,
+                path,
+                PermissionCapability::Modification,
+                allow_once,
+            )?;
             if std::path::Path::new(path).is_dir() {
                 std::fs::remove_dir(path)?;
             }
@@ -99,6 +141,18 @@ fn execute_inverse(op: &OperationRecord) -> Result<(), AppError> {
             let renames: Vec<(String, String)> =
                 serde_json::from_value(meta["renames"].clone()).unwrap_or_default();
             for (new_name, old_name) in renames {
+                permission_service::enforce(
+                    conn,
+                    &new_name,
+                    PermissionCapability::Modification,
+                    allow_once,
+                )?;
+                permission_service::enforce(
+                    conn,
+                    &old_name,
+                    PermissionCapability::Modification,
+                    allow_once,
+                )?;
                 file_service::rename(&new_name, &old_name)?;
             }
         }
@@ -106,17 +160,34 @@ fn execute_inverse(op: &OperationRecord) -> Result<(), AppError> {
     Ok(())
 }
 
-fn execute_forward(op: &OperationRecord) -> Result<(), AppError> {
+fn execute_forward(
+    conn: &Connection,
+    op: &OperationRecord,
+    allow_once: bool,
+) -> Result<(), AppError> {
     let meta = op.metadata.clone().unwrap_or(serde_json::json!({}));
 
     match op.operation_type {
         OperationType::Rename => {
             let src = meta["source"].as_str().unwrap_or("");
             let dest = meta["destination"].as_str().unwrap_or("");
+            permission_service::enforce(conn, src, PermissionCapability::Modification, allow_once)?;
+            permission_service::enforce(
+                conn,
+                dest,
+                PermissionCapability::Modification,
+                allow_once,
+            )?;
             file_service::rename(src, dest)?;
         }
         OperationType::CreateDir => {
             let path = meta["path"].as_str().unwrap_or("");
+            permission_service::enforce(
+                conn,
+                path,
+                PermissionCapability::Modification,
+                allow_once,
+            )?;
             file_service::create_dir(path)?;
         }
         _ => {
@@ -141,6 +212,10 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let conn = Connection::open(dir.join("test.db")).unwrap();
         migrations::run_migrations(&conn).unwrap();
+        repository::set_setting(&conn, "permission_default_content_scan", "allow").unwrap();
+        repository::set_setting(&conn, "permission_default_modification", "allow").unwrap();
+        repository::set_setting(&conn, "permission_default_ocr", "allow").unwrap();
+        repository::set_setting(&conn, "permission_default_indexing", "allow").unwrap();
         conn
     }
 
@@ -178,7 +253,7 @@ mod tests {
         assert!(!src.exists());
         assert!(dest.exists());
 
-        undo(&conn).unwrap();
+        undo(&conn, false).unwrap();
 
         assert!(src.exists());
         assert!(!dest.exists());
@@ -219,7 +294,7 @@ mod tests {
 
         assert!(!file.exists());
 
-        undo(&conn).unwrap();
+        undo(&conn, false).unwrap();
 
         assert!(file.exists());
         assert_eq!(fs::read_to_string(&file).unwrap(), "precious");
@@ -251,11 +326,11 @@ mod tests {
         )
         .unwrap();
 
-        undo(&conn).unwrap();
+        undo(&conn, false).unwrap();
         assert!(src.exists());
         assert!(!dest.exists());
 
-        redo(&conn).unwrap();
+        redo(&conn, false).unwrap();
         assert!(!src.exists());
         assert!(dest.exists());
 
@@ -265,12 +340,12 @@ mod tests {
     #[test]
     fn test_undo_empty_returns_error() {
         let conn = setup_db();
-        assert!(undo(&conn).is_err());
+        assert!(undo(&conn, false).is_err());
     }
 
     #[test]
     fn test_redo_empty_returns_error() {
         let conn = setup_db();
-        assert!(redo(&conn).is_err());
+        assert!(redo(&conn, false).is_err());
     }
 }

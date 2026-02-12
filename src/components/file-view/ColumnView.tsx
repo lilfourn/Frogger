@@ -3,11 +3,21 @@ import { FileIcon } from "../shared/FileIcon";
 
 interface ColumnViewProps {
   entries: FileEntry[];
-  onNavigate: (entry: FileEntry) => void;
+  onSelect: (entry: FileEntry) => void;
+  onOpen: (entry: FileEntry) => void;
+  onItemContextMenu: (e: React.MouseEvent, entry: FileEntry) => void;
+  selectedPaths: Set<string>;
   focusIndex?: number;
 }
 
-export function ColumnView({ entries, onNavigate, focusIndex = -1 }: ColumnViewProps) {
+export function ColumnView({
+  entries,
+  onSelect,
+  onOpen,
+  onItemContextMenu,
+  selectedPaths,
+  focusIndex = -1,
+}: ColumnViewProps) {
   return (
     <div data-testid="column-view" className="flex h-full overflow-x-auto">
       <div className="min-w-[250px] border-r border-[var(--color-border)]">
@@ -16,11 +26,11 @@ export function ColumnView({ entries, onNavigate, focusIndex = -1 }: ColumnViewP
             key={entry.path}
             role="listitem"
             className={`flex cursor-pointer items-center justify-between px-3 py-1.5 hover:bg-[var(--color-bg-secondary)] ${
-              idx === focusIndex
-                ? "bg-[var(--color-accent)]/10 outline outline-2 outline-[var(--color-accent)]"
-                : ""
-            }`}
-            onClick={() => onNavigate(entry)}
+              selectedPaths.has(entry.path) ? "bg-[var(--color-accent)]/10" : ""
+            } ${idx === focusIndex ? "outline outline-2 outline-[var(--color-accent)]" : ""}`}
+            onClick={() => onSelect(entry)}
+            onDoubleClick={() => onOpen(entry)}
+            onContextMenu={(e) => onItemContextMenu(e, entry)}
           >
             <div className="flex items-center gap-2 overflow-hidden">
               <FileIcon isDirectory={entry.is_directory} size={16} />

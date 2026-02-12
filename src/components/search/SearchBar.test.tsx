@@ -72,6 +72,7 @@ describe("SearchBar", () => {
         {
           file_path: "/docs/readme.md",
           file_name: "readme.md",
+          is_directory: false,
           score: 0.9,
           match_source: "fts",
           snippet: null,
@@ -79,6 +80,7 @@ describe("SearchBar", () => {
         {
           file_path: "/src/app.ts",
           file_name: "app.ts",
+          is_directory: false,
           score: 0.7,
           match_source: "vec",
           snippet: null,
@@ -99,6 +101,7 @@ describe("SearchBar", () => {
         {
           file_path: "/src/app.ts",
           file_name: "app.ts",
+          is_directory: false,
           score: 0.7,
           match_source: "vec",
           snippet: null,
@@ -118,6 +121,7 @@ describe("SearchBar", () => {
         {
           file_path: "/docs/readme.md",
           file_name: "readme.md",
+          is_directory: false,
           score: 0.9,
           match_source: "fts",
           snippet: null,
@@ -137,6 +141,7 @@ describe("SearchBar", () => {
         {
           file_path: "/docs/readme.md",
           file_name: "readme.md",
+          is_directory: false,
           score: 0.9,
           match_source: "fts",
           snippet: null,
@@ -155,8 +160,22 @@ describe("SearchBar", () => {
       isOpen: true,
       query: "test",
       results: [
-        { file_path: "/a.txt", file_name: "a.txt", score: 1, match_source: "fts", snippet: null },
-        { file_path: "/b.txt", file_name: "b.txt", score: 0.8, match_source: "fts", snippet: null },
+        {
+          file_path: "/a.txt",
+          file_name: "a.txt",
+          is_directory: false,
+          score: 1,
+          match_source: "fts",
+          snippet: null,
+        },
+        {
+          file_path: "/b.txt",
+          file_name: "b.txt",
+          is_directory: false,
+          score: 0.8,
+          match_source: "fts",
+          snippet: null,
+        },
       ],
     });
     render(<SearchBar />);
@@ -171,8 +190,22 @@ describe("SearchBar", () => {
       query: "test",
       selectedIndex: 1,
       results: [
-        { file_path: "/a.txt", file_name: "a.txt", score: 1, match_source: "fts", snippet: null },
-        { file_path: "/b.txt", file_name: "b.txt", score: 0.8, match_source: "fts", snippet: null },
+        {
+          file_path: "/a.txt",
+          file_name: "a.txt",
+          is_directory: false,
+          score: 1,
+          match_source: "fts",
+          snippet: null,
+        },
+        {
+          file_path: "/b.txt",
+          file_name: "b.txt",
+          is_directory: false,
+          score: 0.8,
+          match_source: "fts",
+          snippet: null,
+        },
       ],
     });
     render(<SearchBar />);
@@ -187,7 +220,14 @@ describe("SearchBar", () => {
       query: "test",
       selectedIndex: 0,
       results: [
-        { file_path: "/a.txt", file_name: "a.txt", score: 1, match_source: "fts", snippet: null },
+        {
+          file_path: "/a.txt",
+          file_name: "a.txt",
+          is_directory: false,
+          score: 1,
+          match_source: "fts",
+          snippet: null,
+        },
       ],
     });
     render(<SearchBar />);
@@ -205,8 +245,9 @@ describe("SearchBar", () => {
         {
           file_path: "/docs/guide.md",
           file_name: "guide.md",
+          is_directory: false,
           score: 1,
-          match_source: "hybrid",
+          match_source: "fts",
           snippet: null,
         },
       ],
@@ -215,6 +256,28 @@ describe("SearchBar", () => {
 
     fireEvent.keyDown(screen.getByTestId("search-input"), { key: "Enter" });
     expect(mockNavigateTo).toHaveBeenCalledWith("/docs");
+    expect(useSearchStore.getState().isOpen).toBe(false);
+  });
+
+  it("navigates directly to directory result on click", () => {
+    useSearchStore.setState({
+      isOpen: true,
+      query: "reports",
+      results: [
+        {
+          file_path: "/docs/reports",
+          file_name: "reports",
+          is_directory: true,
+          score: 1,
+          match_source: "fts",
+          snippet: null,
+        },
+      ],
+    });
+    render(<SearchBar />);
+
+    fireEvent.click(screen.getByText("reports"));
+    expect(mockNavigateTo).toHaveBeenCalledWith("/docs/reports");
     expect(useSearchStore.getState().isOpen).toBe(false);
   });
 });

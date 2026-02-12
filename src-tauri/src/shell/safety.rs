@@ -4,6 +4,7 @@ use std::path::{Component, Path};
 const FORBIDDEN_PATTERNS: &[&str] = &[";", "&&", "||", "|", "`", "$(", "${", "\n", "\r"];
 
 const PROTECTED_ROOTS: &[&str] = &[
+    "/Applications",
     "/bin",
     "/sbin",
     "/usr",
@@ -12,6 +13,7 @@ const PROTECTED_ROOTS: &[&str] = &[
     "/etc",
     "C:\\Windows",
     "C:\\Program Files",
+    "C:\\Program Files (x86)",
 ];
 
 pub fn validate_path(path: &str) -> Result<(), AppError> {
@@ -43,11 +45,31 @@ pub fn validate_path(path: &str) -> Result<(), AppError> {
 }
 
 pub fn is_protected_path(path: &str) -> bool {
-    let normalized = path.replace('\\', "/");
+    let normalized = normalize_path_for_match(path);
     PROTECTED_ROOTS.iter().any(|root| {
-        let root_normalized = root.replace('\\', "/");
-        normalized == root_normalized || normalized.starts_with(&format!("{root_normalized}/"))
+        let root_normalized = normalize_path_for_match(root);
+        if is_windows_style_path(&root_normalized) {
+            let normalized_lower = normalized.to_ascii_lowercase();
+            let root_lower = root_normalized.to_ascii_lowercase();
+            normalized_lower == root_lower
+                || normalized_lower.starts_with(&format!("{root_lower}/"))
+        } else {
+            normalized == root_normalized || normalized.starts_with(&format!("{root_normalized}/"))
+        }
     })
+}
+
+fn normalize_path_for_match(path: &str) -> String {
+    let mut normalized = path.trim().replace('\\', "/");
+    while normalized.ends_with('/') && normalized.len() > 1 {
+        normalized.pop();
+    }
+    normalized
+}
+
+fn is_windows_style_path(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic()
 }
 
 pub fn validate_not_protected(path: &str) -> Result<(), AppError> {
@@ -88,10 +110,15 @@ mod tests {
     #[test]
     fn test_protected_paths() {
         assert!(is_protected_path("/bin"));
+        assert!(is_protected_path("/Applications"));
         assert!(is_protected_path("/usr"));
         assert!(is_protected_path("/System"));
         assert!(is_protected_path("/usr/local/bin"));
+        assert!(is_protected_path("C:\\Program Files (x86)\\Common Files"));
+        assert!(is_protected_path("c:\\program files\\Common Files"));
+        assert!(is_protected_path("C:/WINDOWS/System32"));
         assert!(!is_protected_path("/Users/test"));
+        assert!(!is_protected_path("C:/Users/test"));
         assert!(!is_protected_path("/tmp"));
     }
 

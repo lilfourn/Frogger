@@ -24,7 +24,14 @@ describe("searchStore", () => {
 
   it("setResults updates results", () => {
     const results = [
-      { file_path: "/a.txt", file_name: "a.txt", score: 1, match_source: "fts" as const, snippet: null },
+      {
+        file_path: "/a.txt",
+        file_name: "a.txt",
+        is_directory: false,
+        score: 1,
+        match_source: "fts" as const,
+        snippet: null,
+      },
     ];
     useSearchStore.getState().setResults(results);
     expect(useSearchStore.getState().results).toEqual(results);
@@ -43,7 +50,14 @@ describe("searchStore", () => {
   it("open resets state and sets isOpen", () => {
     useSearchStore.getState().setQuery("old");
     useSearchStore.getState().setResults([
-      { file_path: "/x", file_name: "x", score: 1, match_source: "fts", snippet: null },
+      {
+        file_path: "/x",
+        file_name: "x",
+        is_directory: false,
+        score: 1,
+        match_source: "fts",
+        snippet: null,
+      },
     ]);
     useSearchStore.getState().setSelectedIndex(2);
 

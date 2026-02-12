@@ -45,6 +45,10 @@ CREATE TABLE IF NOT EXISTS permission_scopes (
     allow_modification BOOLEAN DEFAULT 0,
     allow_ocr BOOLEAN DEFAULT 1,
     allow_indexing BOOLEAN DEFAULT 1,
+    content_scan_mode TEXT NOT NULL DEFAULT 'ask',
+    modification_mode TEXT NOT NULL DEFAULT 'ask',
+    ocr_mode TEXT NOT NULL DEFAULT 'allow',
+    indexing_mode TEXT NOT NULL DEFAULT 'allow',
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 ";
@@ -95,14 +99,102 @@ CREATE TABLE IF NOT EXISTS api_audit_log (
 );
 ";
 
+const SCHEMA_V3: &str = "
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY NOT NULL,
+    value TEXT NOT NULL
+);
+";
+
 const SCHEMA_V2_VEC: &str =
     "CREATE VIRTUAL TABLE IF NOT EXISTS vec_index USING vec0(file_path TEXT PRIMARY KEY, embedding float[384])";
+
+fn ensure_permission_mode_columns(conn: &Connection) -> Result<(), AppError> {
+    let columns: Vec<String> = conn
+        .prepare("PRAGMA table_info(permission_scopes)")?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut added = false;
+
+    if !columns.iter().any(|c| c == "content_scan_mode") {
+        conn.execute(
+            "ALTER TABLE permission_scopes ADD COLUMN content_scan_mode TEXT NOT NULL DEFAULT 'ask'",
+            [],
+        )?;
+        added = true;
+    }
+    if !columns.iter().any(|c| c == "modification_mode") {
+        conn.execute(
+            "ALTER TABLE permission_scopes ADD COLUMN modification_mode TEXT NOT NULL DEFAULT 'ask'",
+            [],
+        )?;
+        added = true;
+    }
+    if !columns.iter().any(|c| c == "ocr_mode") {
+        conn.execute(
+            "ALTER TABLE permission_scopes ADD COLUMN ocr_mode TEXT NOT NULL DEFAULT 'allow'",
+            [],
+        )?;
+        added = true;
+    }
+    if !columns.iter().any(|c| c == "indexing_mode") {
+        conn.execute(
+            "ALTER TABLE permission_scopes ADD COLUMN indexing_mode TEXT NOT NULL DEFAULT 'allow'",
+            [],
+        )?;
+        added = true;
+    }
+
+    // One-time backfill for legacy boolean-only scopes.
+    if added {
+        conn.execute_batch(
+            "UPDATE permission_scopes
+               SET content_scan_mode = CASE WHEN allow_content_scan = 1 THEN 'allow' ELSE 'deny' END
+             WHERE content_scan_mode = 'ask';
+             UPDATE permission_scopes
+               SET modification_mode = CASE WHEN allow_modification = 1 THEN 'allow' ELSE 'deny' END
+             WHERE modification_mode = 'ask';
+             UPDATE permission_scopes
+               SET ocr_mode = CASE WHEN allow_ocr = 1 THEN 'allow' ELSE 'deny' END
+             WHERE ocr_mode = 'allow' OR ocr_mode = 'ask';
+             UPDATE permission_scopes
+               SET indexing_mode = CASE WHEN allow_indexing = 1 THEN 'allow' ELSE 'deny' END
+             WHERE indexing_mode = 'allow' OR indexing_mode = 'ask';",
+        )?;
+    }
+
+    Ok(())
+}
+
+fn ensure_permission_default_settings(conn: &Connection) -> Result<(), AppError> {
+    conn.execute(
+        "INSERT OR IGNORE INTO settings(key, value) VALUES (?1, ?2)",
+        ("permission_default_content_scan", "ask"),
+    )?;
+    conn.execute(
+        "INSERT OR IGNORE INTO settings(key, value) VALUES (?1, ?2)",
+        ("permission_default_modification", "ask"),
+    )?;
+    conn.execute(
+        "INSERT OR IGNORE INTO settings(key, value) VALUES (?1, ?2)",
+        ("permission_default_ocr", "ask"),
+    )?;
+    conn.execute(
+        "INSERT OR IGNORE INTO settings(key, value) VALUES (?1, ?2)",
+        ("permission_default_indexing", "allow"),
+    )?;
+    Ok(())
+}
 
 pub fn run_migrations(conn: &Connection) -> Result<(), AppError> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.execute_batch(SCHEMA_V1)?;
+    ensure_permission_mode_columns(conn)?;
     conn.execute_batch(SCHEMA_V2)?;
     conn.execute(SCHEMA_V2_VEC, [])?;
+    conn.execute_batch(SCHEMA_V3)?;
+    ensure_permission_default_settings(conn)?;
     Ok(())
 }
 
@@ -111,11 +203,7 @@ mod tests {
     use super::*;
 
     fn register_vec_extension() {
-        unsafe {
-            rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
-                sqlite_vec::sqlite3_vec_init as *const (),
-            )));
-        }
+        crate::data::register_sqlite_vec_extension();
     }
 
     fn test_conn() -> Connection {

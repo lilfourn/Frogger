@@ -1,5 +1,15 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
+
+vi.mock("pdfjs-dist", () => ({
+  GlobalWorkerOptions: { workerSrc: "" },
+  getDocument: vi.fn(),
+}));
+
+vi.mock("@uiw/react-codemirror", () => ({
+  default: () => <div data-testid="codemirror-mock" />,
+}));
+
 import { QuickLookPanel } from "./QuickLookPanel";
 
 describe("QuickLookPanel", () => {

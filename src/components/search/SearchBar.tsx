@@ -3,6 +3,7 @@ import { Search } from "lucide-react";
 import { useSearchStore } from "../../stores/searchStore";
 import { useFileStore } from "../../stores/fileStore";
 import { useSearch } from "../../hooks/useSearch";
+import type { SearchResult } from "../../types/search";
 
 export function SearchBar() {
   useSearch();
@@ -24,9 +25,11 @@ export function SearchBar() {
   }, [isOpen]);
 
   const selectResult = useCallback(
-    (filePath: string) => {
-      const parent = filePath.replace(/\/[^/]+$/, "") || "/";
-      navigateTo(parent);
+    (result: SearchResult) => {
+      const targetPath = result.is_directory
+        ? result.file_path
+        : result.file_path.replace(/\/[^/]+$/, "") || "/";
+      navigateTo(targetPath);
       close();
     },
     [navigateTo, close],
@@ -43,7 +46,7 @@ export function SearchBar() {
         e.preventDefault();
         setSelectedIndex(Math.max(selectedIndex - 1, 0));
       } else if (e.key === "Enter" && results[selectedIndex]) {
-        selectResult(results[selectedIndex].file_path);
+        selectResult(results[selectedIndex]);
       }
     },
     [close, selectedIndex, setSelectedIndex, results, selectResult],
@@ -84,7 +87,7 @@ export function SearchBar() {
         {results.length > 0 && (
           <div className="border-t border-[var(--color-border)]">
             {results.map((result, i) => {
-              const parent = result.file_path.replace(/\/[^/]+$/, "");
+              const parent = result.file_path.replace(/\/[^/]+$/, "") || "/";
               return (
                 <button
                   key={result.file_path}
@@ -94,7 +97,7 @@ export function SearchBar() {
                       ? "bg-[var(--color-bg-secondary)]"
                       : "hover:bg-[var(--color-bg-secondary)]"
                   }`}
-                  onClick={() => selectResult(result.file_path)}
+                  onClick={() => selectResult(result)}
                 >
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-sm text-[var(--color-text)]">

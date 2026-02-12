@@ -60,6 +60,8 @@ export const useFileStore = create<FileState>()((set, get) => ({
   navigateTo: (path) =>
     set((s) => ({
       currentPath: path,
+      entries: [],
+      selectedFiles: [],
       error: null,
       recentPaths: [path, ...s.recentPaths.filter((p) => p !== path)].slice(0, MAX_RECENTS),
       tabs: s.tabs.map((t) => (t.id === s.activeTabId ? { ...t, path } : t)),

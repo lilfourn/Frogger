@@ -8,22 +8,51 @@ use crate::error::AppError;
 use crate::models::file_entry::FileEntry;
 use crate::models::operation::OperationType;
 use crate::models::volume::VolumeInfo;
+use crate::services::permission_service::{self, PermissionCapability};
 use crate::services::{file_service, undo_service};
 use crate::state::AppState;
 
 #[command]
 pub fn list_directory(
     path: String,
+    allow_once: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<Vec<FileEntry>, AppError> {
+    let allow_once = allow_once.unwrap_or(false);
+    {
+        let conn = state
+            .db
+            .lock()
+            .map_err(|e| AppError::General(e.to_string()))?;
+        permission_service::enforce_cached(
+            &conn,
+            &state,
+            &path,
+            PermissionCapability::ContentScan,
+            allow_once,
+        )?;
+    }
+
     let entries = read_directory(&path)?;
 
     if let Ok(conn) = state.db.try_lock() {
-        for entry in &entries {
-            let modified = entry.modified_at.as_deref().unwrap_or("");
-            if repository::needs_reindex(&conn, &entry.path, modified) {
-                let _ = repository::insert_file(&conn, entry);
-                let _ = repository::insert_fts(&conn, &entry.path, &entry.name, "");
+        if let Ok(policy) = permission_service::load_policy_cache_entry(&conn, &state) {
+            for entry in &entries {
+                if permission_service::enforce_with_cached_policy(
+                    &policy,
+                    &entry.path,
+                    PermissionCapability::Indexing,
+                    false,
+                )
+                .is_err()
+                {
+                    continue;
+                }
+                let modified = entry.modified_at.as_deref().unwrap_or("");
+                if repository::needs_reindex(&conn, &entry.path, modified) {
+                    let _ = repository::insert_file(&conn, entry);
+                    let _ = repository::insert_fts(&conn, &entry.path, &entry.name, "");
+                }
             }
         }
     }
@@ -39,8 +68,14 @@ fn read_directory(path: &str) -> Result<Vec<FileEntry>, AppError> {
 
     let mut entries = Vec::new();
     for entry in fs::read_dir(dir_path)? {
-        let entry = entry?;
-        let metadata = entry.metadata()?;
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        let metadata = match entry.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
         let file_name = entry.file_name().to_string_lossy().to_string();
         let file_path = entry.path().to_string_lossy().to_string();
 
@@ -153,7 +188,25 @@ pub fn get_mounted_volumes() -> Result<Vec<VolumeInfo>, AppError> {
 }
 
 #[command]
-pub fn create_directory(path: String, state: State<'_, AppState>) -> Result<(), AppError> {
+pub fn create_directory(
+    path: String,
+    allow_once: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<(), AppError> {
+    let allow_once = allow_once.unwrap_or(false);
+    let conn = state
+        .db
+        .lock()
+        .map_err(|e| AppError::General(e.to_string()))?;
+    permission_service::enforce_cached(
+        &conn,
+        &state,
+        &path,
+        PermissionCapability::Modification,
+        allow_once,
+    )?;
+    drop(conn);
+
     file_service::create_dir(&path)?;
     let conn = state.db.lock().unwrap();
     let meta = serde_json::json!({ "path": path });
@@ -172,8 +225,31 @@ pub fn create_directory(path: String, state: State<'_, AppState>) -> Result<(), 
 pub fn rename_file(
     source: String,
     destination: String,
+    allow_once: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<(), AppError> {
+    let allow_once = allow_once.unwrap_or(false);
+    {
+        let conn = state
+            .db
+            .lock()
+            .map_err(|e| AppError::General(e.to_string()))?;
+        permission_service::enforce_cached(
+            &conn,
+            &state,
+            &source,
+            PermissionCapability::Modification,
+            allow_once,
+        )?;
+        permission_service::enforce_cached(
+            &conn,
+            &state,
+            &destination,
+            PermissionCapability::Modification,
+            allow_once,
+        )?;
+    }
+
     file_service::rename(&source, &destination)?;
     let conn = state.db.lock().unwrap();
     let meta = serde_json::json!({ "source": source, "destination": destination });
@@ -192,8 +268,33 @@ pub fn rename_file(
 pub fn move_files(
     sources: Vec<String>,
     dest_dir: String,
+    allow_once: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<Vec<String>, AppError> {
+    let allow_once = allow_once.unwrap_or(false);
+    {
+        let conn = state
+            .db
+            .lock()
+            .map_err(|e| AppError::General(e.to_string()))?;
+        permission_service::enforce_cached(
+            &conn,
+            &state,
+            &dest_dir,
+            PermissionCapability::Modification,
+            allow_once,
+        )?;
+        for src in &sources {
+            permission_service::enforce_cached(
+                &conn,
+                &state,
+                src,
+                PermissionCapability::Modification,
+                allow_once,
+            )?;
+        }
+    }
+
     let dest_paths = file_service::move_files(&sources, &dest_dir)?;
     let conn = state.db.lock().unwrap();
     let moves: Vec<(&str, &str)> = dest_paths
@@ -217,8 +318,33 @@ pub fn move_files(
 pub fn copy_files(
     sources: Vec<String>,
     dest_dir: String,
+    allow_once: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<Vec<String>, AppError> {
+    let allow_once = allow_once.unwrap_or(false);
+    {
+        let conn = state
+            .db
+            .lock()
+            .map_err(|e| AppError::General(e.to_string()))?;
+        permission_service::enforce_cached(
+            &conn,
+            &state,
+            &dest_dir,
+            PermissionCapability::Modification,
+            allow_once,
+        )?;
+        for src in &sources {
+            permission_service::enforce_cached(
+                &conn,
+                &state,
+                src,
+                PermissionCapability::Modification,
+                allow_once,
+            )?;
+        }
+    }
+
     let dest_paths = file_service::copy_files(&sources, &dest_dir)?;
     let conn = state.db.lock().unwrap();
     let meta = serde_json::json!({ "copied_paths": dest_paths });
@@ -234,7 +360,28 @@ pub fn copy_files(
 }
 
 #[command]
-pub fn delete_files(paths: Vec<String>, state: State<'_, AppState>) -> Result<(), AppError> {
+pub fn delete_files(
+    paths: Vec<String>,
+    allow_once: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<(), AppError> {
+    let allow_once = allow_once.unwrap_or(false);
+    {
+        let conn = state
+            .db
+            .lock()
+            .map_err(|e| AppError::General(e.to_string()))?;
+        for path in &paths {
+            permission_service::enforce_cached(
+                &conn,
+                &state,
+                path,
+                PermissionCapability::Modification,
+                allow_once,
+            )?;
+        }
+    }
+
     let results = file_service::soft_delete(&paths)?;
     let conn = state.db.lock().unwrap();
     let items: Vec<serde_json::Value> = results
@@ -262,9 +409,34 @@ pub fn delete_files(paths: Vec<String>, state: State<'_, AppState>) -> Result<()
 pub fn copy_files_with_progress(
     sources: Vec<String>,
     dest_dir: String,
+    allow_once: Option<bool>,
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Vec<String>, AppError> {
+    let allow_once = allow_once.unwrap_or(false);
+    {
+        let conn = state
+            .db
+            .lock()
+            .map_err(|e| AppError::General(e.to_string()))?;
+        permission_service::enforce_cached(
+            &conn,
+            &state,
+            &dest_dir,
+            PermissionCapability::Modification,
+            allow_once,
+        )?;
+        for src in &sources {
+            permission_service::enforce_cached(
+                &conn,
+                &state,
+                src,
+                PermissionCapability::Modification,
+                allow_once,
+            )?;
+        }
+    }
+
     state.cancel_flag.store(false, Ordering::Relaxed);
     let cancel = state.cancel_flag.clone();
 
@@ -291,15 +463,308 @@ pub fn cancel_operation(state: State<'_, AppState>) {
 }
 
 #[command]
-pub fn undo_operation(state: State<'_, AppState>) -> Result<String, AppError> {
+pub fn undo_operation(
+    allow_once: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<String, AppError> {
     let conn = state.db.lock().unwrap();
-    undo_service::undo(&conn)
+    undo_service::undo(&conn, allow_once.unwrap_or(false))
 }
 
 #[command]
-pub fn redo_operation(state: State<'_, AppState>) -> Result<String, AppError> {
+pub fn redo_operation(
+    allow_once: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<String, AppError> {
     let conn = state.db.lock().unwrap();
-    undo_service::redo(&conn)
+    undo_service::redo(&conn, allow_once.unwrap_or(false))
+}
+
+#[command]
+pub fn find_large_files(
+    directory: String,
+    min_size: i64,
+    allow_once: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<Vec<FileEntry>, AppError> {
+    let allow_once = allow_once.unwrap_or(false);
+    let conn = state
+        .db
+        .lock()
+        .map_err(|e| AppError::General(e.to_string()))?;
+    permission_service::enforce_cached(
+        &conn,
+        &state,
+        &directory,
+        PermissionCapability::ContentScan,
+        allow_once,
+    )?;
+    let mut stmt = conn.prepare(
+        "SELECT path, name, extension, mime_type, size_bytes, created_at, modified_at, is_directory, parent_path
+         FROM files WHERE parent_path LIKE ?1 || '%' AND is_directory = 0 AND size_bytes >= ?2
+         ORDER BY size_bytes DESC LIMIT 100",
+    )?;
+    let entries = stmt
+        .query_map(rusqlite::params![directory, min_size], |row| {
+            Ok(FileEntry {
+                path: row.get(0)?,
+                name: row.get(1)?,
+                extension: row.get(2)?,
+                mime_type: row.get(3)?,
+                size_bytes: row.get(4)?,
+                created_at: row.get(5)?,
+                modified_at: row.get(6)?,
+                is_directory: row.get(7)?,
+                parent_path: row.get(8)?,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(entries)
+}
+
+#[command]
+pub fn find_old_files(
+    directory: String,
+    older_than_days: i64,
+    allow_once: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<Vec<FileEntry>, AppError> {
+    let allow_once = allow_once.unwrap_or(false);
+    let cutoff = chrono::Utc::now() - chrono::Duration::days(older_than_days);
+    let cutoff_str = cutoff.to_rfc3339();
+    let conn = state
+        .db
+        .lock()
+        .map_err(|e| AppError::General(e.to_string()))?;
+    permission_service::enforce_cached(
+        &conn,
+        &state,
+        &directory,
+        PermissionCapability::ContentScan,
+        allow_once,
+    )?;
+    let mut stmt = conn.prepare(
+        "SELECT path, name, extension, mime_type, size_bytes, created_at, modified_at, is_directory, parent_path
+         FROM files WHERE parent_path LIKE ?1 || '%' AND is_directory = 0 AND modified_at < ?2
+         ORDER BY modified_at ASC LIMIT 100",
+    )?;
+    let entries = stmt
+        .query_map(rusqlite::params![directory, cutoff_str], |row| {
+            Ok(FileEntry {
+                path: row.get(0)?,
+                name: row.get(1)?,
+                extension: row.get(2)?,
+                mime_type: row.get(3)?,
+                size_bytes: row.get(4)?,
+                created_at: row.get(5)?,
+                modified_at: row.get(6)?,
+                is_directory: row.get(7)?,
+                parent_path: row.get(8)?,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(entries)
+}
+
+#[command]
+pub fn find_duplicates(
+    directory: String,
+    allow_once: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<Vec<Vec<FileEntry>>, AppError> {
+    let allow_once = allow_once.unwrap_or(false);
+    let conn = state
+        .db
+        .lock()
+        .map_err(|e| AppError::General(e.to_string()))?;
+    permission_service::enforce_cached(
+        &conn,
+        &state,
+        &directory,
+        PermissionCapability::ContentScan,
+        allow_once,
+    )?;
+    let mut stmt = conn.prepare(
+        "SELECT f.path, f.name, f.extension, f.mime_type, f.size_bytes, f.created_at, f.modified_at, f.is_directory, f.parent_path
+         FROM files f
+         INNER JOIN (
+           SELECT size_bytes FROM files
+           WHERE parent_path LIKE ?1 || '%' AND is_directory = 0 AND size_bytes > 0
+           GROUP BY size_bytes HAVING COUNT(*) > 1
+         ) dups ON f.size_bytes = dups.size_bytes
+         WHERE f.parent_path LIKE ?1 || '%' AND f.is_directory = 0
+         ORDER BY f.size_bytes DESC, f.name ASC",
+    )?;
+    let flat: Vec<FileEntry> = stmt
+        .query_map(rusqlite::params![directory], |row| {
+            Ok(FileEntry {
+                path: row.get(0)?,
+                name: row.get(1)?,
+                extension: row.get(2)?,
+                mime_type: row.get(3)?,
+                size_bytes: row.get(4)?,
+                created_at: row.get(5)?,
+                modified_at: row.get(6)?,
+                is_directory: row.get(7)?,
+                parent_path: row.get(8)?,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    let mut groups: std::collections::HashMap<i64, Vec<FileEntry>> =
+        std::collections::HashMap::new();
+    for entry in flat {
+        if let Some(size) = entry.size_bytes {
+            groups.entry(size).or_default().push(entry);
+        }
+    }
+    let result: Vec<Vec<FileEntry>> = groups.into_values().filter(|g| g.len() > 1).collect();
+    Ok(result)
+}
+
+#[derive(serde::Serialize)]
+pub struct ProjectInfo {
+    pub project_type: String,
+    pub marker_file: String,
+    pub directory: String,
+}
+
+#[command]
+pub fn detect_project_type(
+    directory: String,
+    allow_once: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<Option<ProjectInfo>, AppError> {
+    let allow_once = allow_once.unwrap_or(false);
+    {
+        let conn = state
+            .db
+            .lock()
+            .map_err(|e| AppError::General(e.to_string()))?;
+        permission_service::enforce_cached(
+            &conn,
+            &state,
+            &directory,
+            PermissionCapability::ContentScan,
+            allow_once,
+        )?;
+    }
+
+    let dir = Path::new(&directory);
+    let markers = [
+        ("package.json", "node"),
+        ("Cargo.toml", "rust"),
+        ("pyproject.toml", "python"),
+        ("setup.py", "python"),
+        ("go.mod", "go"),
+        ("pom.xml", "java"),
+        ("build.gradle", "java"),
+        ("Gemfile", "ruby"),
+        ("composer.json", "php"),
+        ("Package.swift", "swift"),
+        (".csproj", "dotnet"),
+    ];
+    for (marker, project_type) in markers {
+        if dir.join(marker).exists() {
+            return Ok(Some(ProjectInfo {
+                project_type: project_type.to_string(),
+                marker_file: marker.to_string(),
+                directory: directory.clone(),
+            }));
+        }
+    }
+    Ok(None)
+}
+
+#[command]
+pub fn open_file(
+    path: String,
+    allow_once: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<(), AppError> {
+    let allow_once = allow_once.unwrap_or(false);
+    {
+        let conn = state
+            .db
+            .lock()
+            .map_err(|e| AppError::General(e.to_string()))?;
+        permission_service::enforce_cached(
+            &conn,
+            &state,
+            &path,
+            PermissionCapability::ContentScan,
+            allow_once,
+        )?;
+    }
+
+    let p = Path::new(&path);
+    if !p.exists() {
+        return Err(AppError::General(format!("path does not exist: {path}")));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| AppError::General(format!("failed to open: {e}")))?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| AppError::General(format!("failed to open: {e}")))?;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", &path])
+            .spawn()
+            .map_err(|e| AppError::General(format!("failed to open: {e}")))?;
+    }
+    Ok(())
+}
+
+const MAX_PREVIEW_BYTES: u64 = 1_048_576; // 1MB
+
+#[command]
+pub fn read_file_text(
+    path: String,
+    allow_once: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<String, AppError> {
+    let allow_once = allow_once.unwrap_or(false);
+    {
+        let conn = state
+            .db
+            .lock()
+            .map_err(|e| AppError::General(e.to_string()))?;
+        permission_service::enforce_cached(
+            &conn,
+            &state,
+            &path,
+            PermissionCapability::ContentScan,
+            allow_once,
+        )?;
+    }
+
+    let p = Path::new(&path);
+    if !p.is_file() {
+        return Err(AppError::General(format!("not a file: {path}")));
+    }
+    let meta = fs::metadata(p)?;
+    if meta.len() > MAX_PREVIEW_BYTES {
+        let mut buf = vec![0u8; MAX_PREVIEW_BYTES as usize];
+        use std::io::Read;
+        let mut f = fs::File::open(p)?;
+        f.read_exact(&mut buf)?;
+        return String::from_utf8(buf)
+            .map_err(|_| AppError::General("file is not valid UTF-8".to_string()));
+    }
+    fs::read_to_string(p).map_err(|e| AppError::General(format!("failed to read file: {e}")))
 }
 
 #[cfg(test)]
@@ -326,6 +791,26 @@ mod tests {
         let names: Vec<&str> = result.iter().map(|e| e.name.as_str()).collect();
         assert!(names.contains(&"file_a.txt"));
         assert!(names.contains(&"file_b.md"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_read_directory_skips_inaccessible_entries() {
+        let dir = std::env::temp_dir().join("frogger_test_skip_inaccessible");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        File::create(dir.join("readable.txt")).unwrap();
+
+        // Broken symlink — DirEntry::metadata() uses lstat so it succeeds,
+        // but this verifies read_directory doesn't crash on unusual entries.
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(dir.join("nonexistent_target"), dir.join("broken_link"))
+            .unwrap();
+
+        let result = read_directory(&dir.to_string_lossy()).unwrap();
+        let names: Vec<&str> = result.iter().map(|e| e.name.as_str()).collect();
+        assert!(names.contains(&"readable.txt"));
 
         let _ = fs::remove_dir_all(&dir);
     }

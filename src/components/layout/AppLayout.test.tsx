@@ -7,6 +7,10 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn().mockResolvedValue(vi.fn()),
 }));
 
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn().mockResolvedValue({ processed: 0, total: 0, status: "done" }),
+}));
+
 describe("AppLayout", () => {
   beforeEach(() => {
     useSettingsStore.setState(useSettingsStore.getInitialState());

@@ -1,9 +1,39 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { FileView } from "./FileView";
 import { useSettingsStore } from "../../stores/settingsStore";
 import { useFileStore } from "../../stores/fileStore";
 import type { FileEntry } from "../../types/file";
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(),
+}));
+
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn().mockResolvedValue(() => {}),
+}));
+
+vi.mock("../../services/chatService", () => ({
+  sendChat: vi.fn().mockResolvedValue("response"),
+  getChatHistory: vi.fn().mockResolvedValue([]),
+  clearChatHistory: vi.fn().mockResolvedValue(undefined),
+  newChatSession: vi.fn().mockResolvedValue("test-session"),
+  sendOrganizePlan: vi.fn().mockResolvedValue(""),
+  sendOrganizeExecute: vi.fn().mockResolvedValue(""),
+  sendOrganizeApply: vi.fn().mockResolvedValue(""),
+  cancelOrganize: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("../../hooks/useChat", () => ({
+  useChat: () => ({
+    send: vi.fn(),
+    startOrganize: vi.fn(),
+    executeOrganize: vi.fn(),
+    applyOrganize: vi.fn(),
+    cancelActiveOrganize: vi.fn(),
+    resetSession: vi.fn(),
+  }),
+}));
 
 const mockEntries: FileEntry[] = [
   {
@@ -45,6 +75,26 @@ describe("FileView", () => {
   beforeEach(() => {
     useSettingsStore.setState(useSettingsStore.getInitialState());
     useFileStore.setState({ ...useFileStore.getInitialState(), entries: mockEntries });
+  });
+
+  it("renders error empty state when error and no entries", () => {
+    useFileStore.setState({ entries: [], error: "something failed" });
+    render(<FileView />);
+    expect(screen.getByText("Failed to load directory contents")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
+  });
+
+  it("renders permission-specific message for permission errors", () => {
+    useFileStore.setState({ entries: [], error: "permission denied" });
+    render(<FileView />);
+    expect(screen.getByText("Permission required to view this directory")).toBeInTheDocument();
+  });
+
+  it("renders error banner above entries when error with existing entries", () => {
+    useFileStore.setState({ entries: mockEntries, error: "refresh failed" });
+    render(<FileView />);
+    expect(screen.getByText("refresh failed")).toBeInTheDocument();
+    expect(screen.getByText("docs")).toBeInTheDocument();
   });
 
   it("renders list view by default", () => {

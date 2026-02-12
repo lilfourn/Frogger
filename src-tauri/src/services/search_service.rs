@@ -1,81 +1,74 @@
-use std::collections::HashMap;
-
 use rusqlite::Connection;
 
 use crate::data::repository;
 use crate::error::AppError;
-use crate::models::search::{FtsResult, SearchResult, VecResult};
+use crate::models::search::SearchResult;
 use crate::services::embedding_service;
 
-const RRF_K: f64 = 60.0;
+const MIN_SEMANTIC_QUERY_CHARS: usize = 2;
 
-pub fn rrf_fuse(
-    fts_results: &[FtsResult],
-    vec_results: &[VecResult],
-    limit: usize,
-) -> Vec<(String, f64)> {
-    let mut scores: HashMap<String, f64> = HashMap::new();
-
-    for (rank, result) in fts_results.iter().enumerate() {
-        *scores.entry(result.file_path.clone()).or_default() += 1.0 / (RRF_K + rank as f64 + 1.0);
-    }
-
-    for (rank, result) in vec_results.iter().enumerate() {
-        *scores.entry(result.file_path.clone()).or_default() += 1.0 / (RRF_K + rank as f64 + 1.0);
-    }
-
-    let mut ranked: Vec<(String, f64)> = scores.into_iter().collect();
-    ranked.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    ranked.truncate(limit);
-    ranked
+fn derive_file_name(path: &str) -> String {
+    path.rsplit(['/', '\\']).next().unwrap_or(path).to_string()
 }
 
-fn determine_source(path: &str, fts: &[FtsResult], vec: &[VecResult]) -> String {
-    let in_fts = fts.iter().any(|r| r.file_path == path);
-    let in_vec = vec.iter().any(|r| r.file_path == path);
-    match (in_fts, in_vec) {
-        (true, true) => "hybrid".to_string(),
-        (true, false) => "fts".to_string(),
-        (false, true) => "vec".to_string(),
-        _ => "unknown".to_string(),
+fn resolve_file_metadata(conn: &Connection, path: &str) -> (String, bool) {
+    if let Ok(Some(entry)) = repository::get_by_path(conn, path) {
+        return (entry.name, entry.is_directory);
     }
+
+    (derive_file_name(path), false)
 }
 
-pub fn hybrid_search(
-    conn: &Connection,
-    query: &str,
-    limit: usize,
-) -> Result<Vec<SearchResult>, AppError> {
-    if query.trim().is_empty() {
+pub fn search(conn: &Connection, query: &str, limit: usize) -> Result<Vec<SearchResult>, AppError> {
+    let trimmed = query.trim();
+    if trimmed.is_empty() || limit == 0 {
         return Ok(Vec::new());
     }
 
-    let fts_limit = limit * 3;
-    let vec_limit = limit * 3;
+    let keyword_results = repository::search_file_paths_by_name_or_path(conn, trimmed, limit)?;
 
-    let fts_results = repository::search_fts(conn, query, fts_limit).unwrap_or_default();
+    if !keyword_results.is_empty() {
+        let results = keyword_results
+            .into_iter()
+            .enumerate()
+            .map(|(rank, result)| {
+                let (file_name, is_directory) = resolve_file_metadata(conn, &result.file_path);
+                SearchResult {
+                    file_path: result.file_path,
+                    file_name,
+                    is_directory,
+                    score: 1.0 / (rank as f64 + 1.0),
+                    match_source: "fts".to_string(),
+                    snippet: None,
+                }
+            })
+            .collect();
+        return Ok(results);
+    }
 
-    let vec_results = match embedding_service::generate_embedding(query) {
-        Ok(emb) => repository::search_vec(conn, &emb, vec_limit).unwrap_or_default(),
+    if trimmed.chars().count() < MIN_SEMANTIC_QUERY_CHARS {
+        return Ok(Vec::new());
+    }
+
+    let vec_results = match embedding_service::generate_embedding(trimmed) {
+        Ok(emb) => repository::search_vec(conn, &emb, limit).unwrap_or_default(),
         Err(_) => Vec::new(),
     };
 
-    if fts_results.is_empty() && vec_results.is_empty() {
+    if vec_results.is_empty() {
         return Ok(Vec::new());
     }
 
-    let fused = rrf_fuse(&fts_results, &vec_results, limit);
-
-    let results = fused
+    let results = vec_results
         .into_iter()
-        .map(|(path, score)| {
-            let file_name = path.rsplit('/').next().unwrap_or(&path).to_string();
-            let source = determine_source(&path, &fts_results, &vec_results);
+        .map(|result| {
+            let (file_name, is_directory) = resolve_file_metadata(conn, &result.file_path);
             SearchResult {
-                file_path: path,
+                file_path: result.file_path,
                 file_name,
-                score,
-                match_source: source,
+                is_directory,
+                score: 1.0 / (1.0 + result.distance.max(0.0)),
+                match_source: "vec".to_string(),
                 snippet: None,
             }
         })
@@ -88,90 +81,94 @@ pub fn hybrid_search(
 mod tests {
     use super::*;
     use crate::data::migrations;
+    use crate::models::file_entry::FileEntry;
 
     fn test_conn() -> Connection {
-        unsafe {
-            rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
-                sqlite_vec::sqlite3_vec_init as *const (),
-            )));
-        }
+        crate::data::register_sqlite_vec_extension();
         let conn = Connection::open_in_memory().unwrap();
         migrations::run_migrations(&conn).unwrap();
         conn
     }
 
-    #[test]
-    fn test_rrf_fusion_ranking() {
-        let fts = vec![
-            FtsResult {
-                file_path: "/a.txt".into(),
-            },
-            FtsResult {
-                file_path: "/b.txt".into(),
-            },
-        ];
-        let vec = vec![
-            VecResult {
-                file_path: "/b.txt".into(),
-                distance: 0.1,
-            },
-            VecResult {
-                file_path: "/c.txt".into(),
-                distance: 0.3,
-            },
-        ];
-
-        let fused = rrf_fuse(&fts, &vec, 10);
-
-        // /b.txt appears in both → highest RRF score
-        assert_eq!(fused[0].0, "/b.txt");
-        assert!(fused[0].1 > fused[1].1);
-        assert_eq!(fused.len(), 3);
+    fn insert_file(conn: &Connection, path: &str, name: &str, is_directory: bool, parent: &str) {
+        let entry = FileEntry {
+            path: path.to_string(),
+            name: name.to_string(),
+            extension: None,
+            mime_type: None,
+            size_bytes: Some(1),
+            created_at: None,
+            modified_at: Some("2025-01-01T00:00:00Z".to_string()),
+            is_directory,
+            parent_path: Some(parent.to_string()),
+        };
+        repository::insert_file(conn, &entry).unwrap();
     }
 
     #[test]
-    fn test_hybrid_search_returns_results() {
+    fn test_keyword_first_returns_name_matches_before_semantic() {
         let conn = test_conn();
 
-        repository::insert_fts(&conn, "/docs/readme.md", "readme.md", "setup instructions")
-            .unwrap();
+        insert_file(&conn, "/docs/invoices", "invoices", true, "/docs");
+        insert_file(&conn, "/docs/invoices.txt", "invoices.txt", false, "/docs");
+
+        let emb = embedding_service::generate_embedding("invoices").unwrap();
+        repository::insert_vec(&conn, "/docs/notes.txt", &emb).unwrap();
+
+        let results = search(&conn, "invoices", 10).unwrap();
+        assert!(!results.is_empty());
+        assert_eq!(results[0].file_path, "/docs/invoices");
+        assert!(results[0].is_directory);
+        assert_eq!(results[0].match_source, "fts");
+        assert!(results.iter().all(|r| r.match_source == "fts"));
+    }
+
+    #[test]
+    fn test_search_falls_back_to_semantic_after_keyword_miss() {
+        let conn = test_conn();
+
+        insert_file(&conn, "/docs/readme.md", "readme.md", false, "/docs");
+        let emb = embedding_service::generate_embedding("setup instructions").unwrap();
+        repository::insert_vec(&conn, "/docs/readme.md", &emb).unwrap();
+
+        let results = search(&conn, "setup", 10).unwrap();
+        assert!(!results.is_empty());
+        assert_eq!(results[0].file_path, "/docs/readme.md");
+        assert_eq!(results[0].match_source, "vec");
+        assert!(!results[0].is_directory);
+    }
+
+    #[test]
+    fn test_search_does_not_run_semantic_for_short_query_without_keyword_match() {
+        let conn = test_conn();
+
+        insert_file(&conn, "/docs/readme.md", "readme.md", false, "/docs");
         let emb = embedding_service::generate_embedding("readme setup instructions").unwrap();
         repository::insert_vec(&conn, "/docs/readme.md", &emb).unwrap();
 
-        let results = hybrid_search(&conn, "readme", 10).unwrap();
-        assert!(!results.is_empty());
-        assert_eq!(results[0].file_path, "/docs/readme.md");
-        assert_eq!(results[0].match_source, "hybrid");
-    }
-
-    #[test]
-    fn test_hybrid_search_fts_only() {
-        let conn = test_conn();
-        repository::insert_fts(&conn, "/notes.txt", "notes.txt", "grocery list").unwrap();
-
-        let results = hybrid_search(&conn, "grocery", 10).unwrap();
-        assert!(!results.is_empty());
-        assert_eq!(results[0].match_source, "fts");
-    }
-
-    #[test]
-    fn test_hybrid_search_empty_query() {
-        let conn = test_conn();
-        let results = hybrid_search(&conn, "", 10).unwrap();
+        let results = search(&conn, "x", 10).unwrap();
         assert!(results.is_empty());
     }
 
     #[test]
-    fn test_hybrid_search_limit() {
+    fn test_search_empty_query() {
+        let conn = test_conn();
+        let results = search(&conn, "", 10).unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_search_limit_applies_to_keyword_results() {
         let conn = test_conn();
 
         for i in 0..30 {
-            let path = format!("/file_{i}.txt");
-            let name = format!("file_{i}.txt");
-            repository::insert_fts(&conn, &path, &name, "common search term").unwrap();
+            let path = format!("/docs/common_file_{i}.txt");
+            let name = format!("common_file_{i}.txt");
+            insert_file(&conn, &path, &name, false, "/docs");
         }
 
-        let results = hybrid_search(&conn, "common", 5).unwrap();
+        let results = search(&conn, "common", 5).unwrap();
         assert_eq!(results.len(), 5);
+        assert!(results.iter().all(|r| r.match_source == "fts"));
     }
 }

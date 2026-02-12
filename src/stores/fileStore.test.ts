@@ -229,6 +229,29 @@ describe("fileStore", () => {
     expect(useFileStore.getState().tabs).toHaveLength(1);
   });
 
+  it("navigateTo clears entries and selectedFiles", () => {
+    useFileStore.getState().setEntries([
+      {
+        path: "/old/file.txt",
+        name: "file.txt",
+        extension: "txt",
+        mime_type: null,
+        size_bytes: 100,
+        created_at: null,
+        modified_at: null,
+        is_directory: false,
+        parent_path: "/old",
+      },
+    ]);
+    useFileStore.getState().setSelectedFiles(["/old/file.txt"]);
+    expect(useFileStore.getState().entries).toHaveLength(1);
+    expect(useFileStore.getState().selectedFiles).toHaveLength(1);
+
+    useFileStore.getState().navigateTo("/new/path");
+    expect(useFileStore.getState().entries).toEqual([]);
+    expect(useFileStore.getState().selectedFiles).toEqual([]);
+  });
+
   it("navigateTo updates the active tab path", () => {
     useFileStore.getState().navigateTo("/Users");
     useFileStore.getState().navigateTo("/tmp");

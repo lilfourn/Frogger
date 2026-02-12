@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
+import { useFileStore } from "../stores/fileStore";
 import { useSearchStore } from "../stores/searchStore";
 
 vi.mock("../services/searchService", () => ({
@@ -15,6 +16,7 @@ describe("useSearch", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     useSearchStore.setState(useSearchStore.getInitialState());
+    useFileStore.setState({ currentPath: "" });
     mockSearch.mockResolvedValue([]);
   });
 
@@ -37,6 +39,7 @@ describe("useSearch", () => {
       {
         file_path: "/test.txt",
         file_name: "test.txt",
+        is_directory: false,
         score: 1,
         match_source: "fts" as const,
         snippet: null,
@@ -53,15 +56,20 @@ describe("useSearch", () => {
       vi.advanceTimersByTime(150);
     });
 
-    expect(mockSearch).toHaveBeenCalledWith("te", 20);
+    expect(mockSearch).toHaveBeenCalledWith("te", 20, undefined);
   });
 
   it("clears results for empty query", () => {
-    useSearchStore
-      .getState()
-      .setResults([
-        { file_path: "/x", file_name: "x", score: 1, match_source: "fts", snippet: null },
-      ]);
+    useSearchStore.getState().setResults([
+      {
+        file_path: "/x",
+        file_name: "x",
+        is_directory: false,
+        score: 1,
+        match_source: "fts",
+        snippet: null,
+      },
+    ]);
     useSearchStore.getState().setQuery("");
 
     renderHook(() => useSearch());
@@ -86,7 +94,7 @@ describe("useSearch", () => {
       vi.advanceTimersByTime(200);
     });
 
-    expect(mockSearch).toHaveBeenLastCalledWith("second", 20);
+    expect(mockSearch).toHaveBeenLastCalledWith("second", 20, undefined);
   });
 
   it("handles search errors gracefully", async () => {

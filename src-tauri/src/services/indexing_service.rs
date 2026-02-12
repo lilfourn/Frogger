@@ -1,4 +1,7 @@
+use std::collections::HashSet;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -11,10 +14,41 @@ use crate::error::AppError;
 use crate::models::file_entry::FileEntry;
 use crate::services::embedding_service;
 use crate::services::ocr_service;
+use crate::services::permission_service::{self, PermissionCapability};
+use crate::services::spreadsheet_service;
 
 pub struct IndexingHandle {
     _debouncer: notify_debouncer_mini::Debouncer<notify::RecommendedWatcher>,
+    stop_flag: Arc<AtomicBool>,
+    poller: Option<std::thread::JoinHandle<()>>,
+    enrichment_worker: Option<std::thread::JoinHandle<()>>,
+    bootstrap_worker: Option<std::thread::JoinHandle<()>>,
+    enrichment_queue: EnrichmentQueue,
 }
+
+#[derive(Clone)]
+pub(crate) struct EnrichmentQueue {
+    sender: Sender<String>,
+    pending: Arc<Mutex<HashSet<String>>>,
+}
+
+impl IndexingHandle {
+    pub fn stop_flag(&self) -> Arc<AtomicBool> {
+        self.stop_flag.clone()
+    }
+
+    pub fn enrichment_queue(&self) -> EnrichmentQueue {
+        self.enrichment_queue.clone()
+    }
+
+    pub fn attach_bootstrap_worker(&mut self, worker: std::thread::JoinHandle<()>) {
+        self.bootstrap_worker = Some(worker);
+    }
+}
+
+const POLLER_FULL_RECONCILE_INTERVAL_TICKS: u32 = 300;
+const POLLER_INTERVAL_MS: u64 = 3000;
+const WATCH_DEBOUNCE_MS: u64 = 150;
 
 pub fn file_entry_from_path(path: &Path) -> Option<FileEntry> {
     let metadata = path.metadata().ok()?;
@@ -46,54 +80,337 @@ pub fn file_entry_from_path(path: &Path) -> Option<FileEntry> {
     })
 }
 
-pub fn process_event(conn: &Connection, path: &Path) {
-    if path.exists() {
-        if let Some(entry) = file_entry_from_path(path) {
-            let _ = repository::insert_file(conn, &entry);
-            if !entry.is_directory {
-                let modified = entry.modified_at.as_deref().unwrap_or("");
-                let ocr_text = ocr_service::process_file(conn, &entry.path, &entry.name, modified)
-                    .unwrap_or(None)
-                    .unwrap_or_default();
-                let _ = repository::insert_fts(conn, &entry.path, &entry.name, &ocr_text);
-                if !ocr_text.is_empty() {
-                    let _ = embedding_service::embed_file(
-                        conn,
-                        &entry.path,
-                        &entry.name,
-                        entry.extension.as_deref(),
-                        Some(ocr_text.as_str()),
-                    );
+fn process_event_with_default(
+    conn: &Connection,
+    path: &Path,
+    scopes: &[repository::PermissionScope],
+    default_mode: permission_service::PermissionMode,
+    allow_once: bool,
+    enrichment_queue: Option<&EnrichmentQueue>,
+) {
+    if !path.exists() {
+        let path_str = path.to_string_lossy();
+        let _ = repository::delete_file_index(conn, &path_str);
+        return;
+    }
+
+    let Some(entry) = file_entry_from_path(path) else {
+        return;
+    };
+
+    if permission_service::enforce_with_scopes(
+        scopes,
+        &entry.path,
+        PermissionCapability::Indexing,
+        allow_once,
+        default_mode,
+    )
+    .is_err()
+    {
+        return;
+    }
+
+    if !entry.is_directory {
+        let modified = entry.modified_at.as_deref().unwrap_or("");
+        if !repository::needs_reindex(conn, &entry.path, modified) {
+            return;
+        }
+    }
+
+    let _ = repository::insert_file(conn, &entry);
+    if entry.is_directory {
+        return;
+    }
+
+    if has_skip_extension(path) {
+        let _ = repository::insert_fts(conn, &entry.path, &entry.name, "");
+        return;
+    }
+
+    if let Some(queue) = enrichment_queue {
+        let _ = repository::insert_fts(conn, &entry.path, &entry.name, "");
+        enqueue_enrichment(queue, &entry.path);
+        return;
+    }
+
+    enrich_entry_with_default(conn, &entry, allow_once);
+}
+
+fn enrich_entry_with_default(conn: &Connection, entry: &FileEntry, allow_once: bool) {
+    let modified = entry.modified_at.as_deref().unwrap_or("");
+    let mut index_text = ocr_service::process_file(conn, &entry.path, &entry.name, modified)
+        .unwrap_or(None)
+        .unwrap_or_default();
+
+    if index_text.is_empty() {
+        index_text = spreadsheet_service::extract_text(conn, &entry.path, allow_once)
+            .unwrap_or(None)
+            .unwrap_or_default();
+
+        if index_text.is_empty() {
+            let _ = repository::delete_ocr_text(conn, &entry.path);
+        } else {
+            let now = chrono::Utc::now().to_rfc3339();
+            let _ =
+                repository::insert_ocr_text(conn, &entry.path, &index_text, "sheet", None, &now);
+        }
+    }
+
+    let _ = repository::insert_fts(conn, &entry.path, &entry.name, &index_text);
+    if !index_text.is_empty() {
+        let _ = embedding_service::embed_file(
+            conn,
+            &entry.path,
+            &entry.name,
+            entry.extension.as_deref(),
+            Some(index_text.as_str()),
+        );
+    }
+}
+
+fn enqueue_enrichment(queue: &EnrichmentQueue, path: &str) {
+    {
+        let mut pending = queue
+            .pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !pending.insert(path.to_string()) {
+            return;
+        }
+    }
+
+    if let Err(err) = queue.sender.send(path.to_string()) {
+        let mut pending = queue
+            .pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        pending.remove(&err.0);
+    }
+}
+
+fn canonical(path: &Path) -> String {
+    path.canonicalize()
+        .unwrap_or_else(|_| path.to_path_buf())
+        .to_string_lossy()
+        .to_string()
+}
+
+fn reconcile_directory_with_default(
+    conn: &Connection,
+    dir: &Path,
+    scopes: &[repository::PermissionScope],
+    default_mode: permission_service::PermissionMode,
+    allow_once: bool,
+    enrichment_queue: Option<&EnrichmentQueue>,
+) {
+    if !dir.is_dir() {
+        return;
+    }
+
+    let parent = canonical(dir);
+    let indexed = repository::list_by_parent(conn, &parent).unwrap_or_default();
+
+    let mut on_disk: HashSet<String> = HashSet::new();
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            on_disk.insert(canonical(&p));
+            process_event_with_default(
+                conn,
+                &p,
+                scopes,
+                default_mode,
+                allow_once,
+                enrichment_queue,
+            );
+        }
+    }
+
+    for entry in indexed {
+        if !on_disk.contains(&entry.path) {
+            let _ = repository::delete_file_index(conn, &entry.path);
+        }
+    }
+}
+
+fn should_skip_reconcile_dir(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    name.starts_with('.') || SKIP_DIRS.contains(&name)
+}
+
+fn reconcile_tree_with_default(
+    conn: &Connection,
+    root: &Path,
+    scopes: &[repository::PermissionScope],
+    default_mode: permission_service::PermissionMode,
+    allow_once: bool,
+    enrichment_queue: Option<&EnrichmentQueue>,
+) {
+    if !root.is_dir() {
+        return;
+    }
+
+    let mut stack = vec![root.to_path_buf()];
+    let mut visited: HashSet<String> = HashSet::new();
+
+    while let Some(dir) = stack.pop() {
+        let dir_key = canonical(&dir);
+        if !visited.insert(dir_key) {
+            continue;
+        }
+
+        reconcile_directory_with_default(
+            conn,
+            &dir,
+            scopes,
+            default_mode,
+            allow_once,
+            enrichment_queue,
+        );
+
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let child = entry.path();
+                if child.is_dir() && !should_skip_reconcile_dir(&child) {
+                    stack.push(child);
                 }
             }
         }
-    } else {
-        let path_str = path.to_string_lossy();
-        let _ = repository::delete_file_index(conn, &path_str);
+    }
+}
+
+fn run_enrichment_worker(
+    db_path: String,
+    receiver: mpsc::Receiver<String>,
+    pending: Arc<Mutex<HashSet<String>>>,
+    stop_flag: Arc<AtomicBool>,
+    allow_once: bool,
+) {
+    let conn = match Connection::open(&db_path) {
+        Ok(conn) => conn,
+        Err(err) => {
+            sentry::capture_message(
+                &format!("indexing enrichment worker failed to open db: {err}"),
+                sentry::Level::Error,
+            );
+            return;
+        }
+    };
+
+    let _ = conn.busy_timeout(Duration::from_secs(5));
+
+    while !stop_flag.load(Ordering::Relaxed) {
+        let path = match receiver.recv_timeout(Duration::from_millis(250)) {
+            Ok(path) => path,
+            Err(RecvTimeoutError::Timeout) => continue,
+            Err(RecvTimeoutError::Disconnected) => break,
+        };
+
+        {
+            let mut guard = pending
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            guard.remove(&path);
+        }
+
+        let path_buf = Path::new(&path);
+        if !path_buf.exists() || path_buf.is_dir() || has_skip_extension(path_buf) {
+            continue;
+        }
+
+        let Some(entry) = file_entry_from_path(path_buf) else {
+            continue;
+        };
+
+        let scopes = repository::get_permission_scopes(&conn).unwrap_or_default();
+        let default_mode =
+            permission_service::resolve_default_mode(&conn, PermissionCapability::Indexing)
+                .unwrap_or(permission_service::PermissionMode::Allow);
+        if permission_service::enforce_with_scopes(
+            &scopes,
+            &entry.path,
+            PermissionCapability::Indexing,
+            allow_once,
+            default_mode,
+        )
+        .is_err()
+        {
+            continue;
+        }
+
+        enrich_entry_with_default(&conn, &entry, allow_once);
     }
 }
 
 pub fn start_watching(
     db: Arc<Mutex<Connection>>,
+    db_path: String,
     directory: &str,
+    allow_once: bool,
 ) -> Result<IndexingHandle, AppError> {
     let dir_path = Path::new(directory);
     if !dir_path.is_dir() {
         return Err(AppError::Watcher(format!("not a directory: {directory}")));
     }
 
+    let (enrichment_sender, enrichment_receiver) = mpsc::channel();
+    let enrichment_pending = Arc::new(Mutex::new(HashSet::new()));
+    let enrichment_queue = EnrichmentQueue {
+        sender: enrichment_sender,
+        pending: enrichment_pending.clone(),
+    };
+
     let db_clone = db.clone();
+    let watcher_enrichment_queue = enrichment_queue.clone();
+    let watched_dir = dir_path.to_path_buf();
     let mut debouncer = new_debouncer(
-        Duration::from_millis(500),
+        Duration::from_millis(WATCH_DEBOUNCE_MS),
         move |result: DebounceEventResult| match result {
             Ok(events) => {
                 let conn = db_clone.lock().unwrap();
+                let scopes = repository::get_permission_scopes(&conn).unwrap_or_default();
+                let default_mode =
+                    permission_service::resolve_default_mode(&conn, PermissionCapability::Indexing)
+                        .unwrap_or(permission_service::PermissionMode::Allow);
                 for event in events {
                     if matches!(
                         event.kind,
                         DebouncedEventKind::Any | DebouncedEventKind::AnyContinuous
                     ) {
-                        process_event(&conn, &event.path);
+                        if event.path.is_dir() {
+                            reconcile_directory_with_default(
+                                &conn,
+                                &event.path,
+                                &scopes,
+                                default_mode,
+                                allow_once,
+                                Some(&watcher_enrichment_queue),
+                            );
+                        } else {
+                            let path_exists = event.path.exists();
+                            process_event_with_default(
+                                &conn,
+                                &event.path,
+                                &scopes,
+                                default_mode,
+                                allow_once,
+                                Some(&watcher_enrichment_queue),
+                            );
+                            if !path_exists {
+                                if let Some(parent) = event.path.parent() {
+                                    reconcile_directory_with_default(
+                                        &conn,
+                                        parent,
+                                        &scopes,
+                                        default_mode,
+                                        allow_once,
+                                        Some(&watcher_enrichment_queue),
+                                    );
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -109,18 +426,87 @@ pub fn start_watching(
         .watch(dir_path, notify::RecursiveMode::Recursive)
         .map_err(|e| AppError::Watcher(e.to_string()))?;
 
+    // Fallback poller: keeps index fresh even if native watcher events are dropped.
+    let stop_flag = Arc::new(AtomicBool::new(false));
+    let enrichment_worker = if db_path == ":memory:" {
+        None
+    } else {
+        let enrichment_stop = stop_flag.clone();
+        let enrichment_pending_for_worker = enrichment_pending;
+        Some(std::thread::spawn(move || {
+            run_enrichment_worker(
+                db_path,
+                enrichment_receiver,
+                enrichment_pending_for_worker,
+                enrichment_stop,
+                allow_once,
+            );
+        }))
+    };
+
+    let stop_clone = stop_flag.clone();
+    let poll_db = db.clone();
+    let poll_dir = watched_dir.clone();
+    let poll_enrichment_queue = enrichment_queue.clone();
+    let poller = std::thread::spawn(move || {
+        let mut tick = 1u32;
+        while !stop_clone.load(Ordering::Relaxed) {
+            if let Ok(conn) = poll_db.try_lock() {
+                let scopes = repository::get_permission_scopes(&conn).unwrap_or_default();
+                let default_mode =
+                    permission_service::resolve_default_mode(&conn, PermissionCapability::Indexing)
+                        .unwrap_or(permission_service::PermissionMode::Allow);
+                if tick.is_multiple_of(POLLER_FULL_RECONCILE_INTERVAL_TICKS) {
+                    reconcile_tree_with_default(
+                        &conn,
+                        &poll_dir,
+                        &scopes,
+                        default_mode,
+                        allow_once,
+                        Some(&poll_enrichment_queue),
+                    );
+                } else {
+                    reconcile_directory_with_default(
+                        &conn,
+                        &poll_dir,
+                        &scopes,
+                        default_mode,
+                        allow_once,
+                        Some(&poll_enrichment_queue),
+                    );
+                }
+            }
+            tick = tick.wrapping_add(1);
+            std::thread::sleep(Duration::from_millis(POLLER_INTERVAL_MS));
+        }
+    });
+
     Ok(IndexingHandle {
         _debouncer: debouncer,
+        stop_flag,
+        poller: Some(poller),
+        enrichment_worker,
+        bootstrap_worker: None,
+        enrichment_queue,
     })
 }
 
-pub fn stop_watching(handle: IndexingHandle) {
-    drop(handle);
+pub fn stop_watching(mut handle: IndexingHandle) {
+    handle.stop_flag.store(true, Ordering::Relaxed);
+    if let Some(join) = handle.bootstrap_worker.take() {
+        let _ = join.join();
+    }
+    if let Some(join) = handle.poller.take() {
+        let _ = join.join();
+    }
+    if let Some(join) = handle.enrichment_worker.take() {
+        let _ = join.join();
+    }
 }
 
 #[cfg(test)]
 pub fn scan_directory(conn: &Connection, directory: &str) {
-    scan_directory_with_progress(conn, directory, |_, _| {});
+    let _ = scan_directory_internal(conn, directory, false, Some(5), None, None, |_, _| {});
 }
 
 const SKIP_DIRS: &[&str] = &[
@@ -202,47 +588,70 @@ fn has_skip_extension(path: &Path) -> bool {
         .is_some_and(|ext| SKIP_EXTENSIONS.contains(&ext))
 }
 
-pub fn scan_directory_with_progress<F>(conn: &Connection, directory: &str, on_progress: F)
+fn scan_directory_internal<F>(
+    conn: &Connection,
+    directory: &str,
+    allow_once: bool,
+    max_depth: Option<usize>,
+    cancel_flag: Option<&AtomicBool>,
+    enrichment_queue: Option<&EnrichmentQueue>,
+    on_progress: F,
+) -> bool
 where
     F: Fn(usize, usize),
 {
     let dir = Path::new(directory);
     if !dir.is_dir() {
-        return;
+        return false;
     }
 
     let walker = || {
-        walkdir::WalkDir::new(dir)
-            .min_depth(1)
-            .max_depth(5)
-            .into_iter()
-            .filter_entry(|e| !should_skip_dir(e))
-            .filter_map(|e| e.ok())
+        let mut walk = walkdir::WalkDir::new(dir).min_depth(1);
+        if let Some(depth) = max_depth {
+            walk = walk.max_depth(depth);
+        }
+        walk.into_iter()
+            .filter_entry(|entry| !should_skip_dir(entry))
+            .filter_map(|entry| entry.ok())
     };
 
     let total = walker().count();
+    let scopes = repository::get_permission_scopes(conn).unwrap_or_default();
+    let default_mode =
+        permission_service::resolve_default_mode(conn, PermissionCapability::Indexing)
+            .unwrap_or(permission_service::PermissionMode::Allow);
     let mut processed = 0usize;
 
     on_progress(0, total);
+    if cancel_flag.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+        return true;
+    }
 
     let _ = conn.execute_batch("BEGIN");
 
     for entry in walker() {
+        if cancel_flag.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+            let _ = conn.execute_batch("COMMIT");
+            on_progress(processed, total);
+            return true;
+        }
+
         processed += 1;
         let path = entry.path();
-        if let Some(file_entry) = file_entry_from_path(path) {
-            let modified = file_entry.modified_at.as_deref().unwrap_or("");
-            if !repository::needs_reindex(conn, &file_entry.path, modified) {
-                // already indexed and unchanged
-            } else if has_skip_extension(path) {
-                let _ = repository::insert_file(conn, &file_entry);
-                let _ = repository::insert_fts(conn, &file_entry.path, &file_entry.name, "");
-            } else {
-                process_event(conn, path);
-            }
-        }
-        if processed % 50 == 0 {
+        process_event_with_default(
+            conn,
+            path,
+            &scopes,
+            default_mode,
+            allow_once,
+            enrichment_queue,
+        );
+        if processed.is_multiple_of(50) {
             let _ = conn.execute_batch("COMMIT");
+            if cancel_flag.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+                on_progress(processed, total);
+                return true;
+            }
             let _ = conn.execute_batch("BEGIN");
             on_progress(processed, total);
         }
@@ -250,6 +659,50 @@ where
 
     let _ = conn.execute_batch("COMMIT");
     on_progress(total, total);
+    false
+}
+
+pub fn scan_directory_deep_with_progress_cancel<F>(
+    conn: &Connection,
+    directory: &str,
+    allow_once: bool,
+    cancel_flag: &AtomicBool,
+    on_progress: F,
+) -> bool
+where
+    F: Fn(usize, usize),
+{
+    scan_directory_internal(
+        conn,
+        directory,
+        allow_once,
+        None,
+        Some(cancel_flag),
+        None,
+        on_progress,
+    )
+}
+
+pub fn scan_directory_deep_with_progress_cancel_deferred<F>(
+    conn: &Connection,
+    directory: &str,
+    allow_once: bool,
+    cancel_flag: &AtomicBool,
+    enrichment_queue: &EnrichmentQueue,
+    on_progress: F,
+) -> bool
+where
+    F: Fn(usize, usize),
+{
+    scan_directory_internal(
+        conn,
+        directory,
+        allow_once,
+        None,
+        Some(cancel_flag),
+        Some(enrichment_queue),
+        on_progress,
+    )
 }
 
 #[cfg(test)]
@@ -257,16 +710,17 @@ mod tests {
     use super::*;
     use crate::data::migrations;
     use std::fs;
+    use std::sync::atomic::AtomicBool;
     use std::thread;
 
     fn test_conn() -> Connection {
-        unsafe {
-            rusqlite::ffi::sqlite3_auto_extension(Some(std::mem::transmute(
-                sqlite_vec::sqlite3_vec_init as *const (),
-            )));
-        }
+        crate::data::register_sqlite_vec_extension();
         let conn = Connection::open_in_memory().unwrap();
         migrations::run_migrations(&conn).unwrap();
+        repository::set_setting(&conn, "permission_default_content_scan", "allow").unwrap();
+        repository::set_setting(&conn, "permission_default_modification", "allow").unwrap();
+        repository::set_setting(&conn, "permission_default_ocr", "allow").unwrap();
+        repository::set_setting(&conn, "permission_default_indexing", "allow").unwrap();
         conn
     }
 
@@ -337,7 +791,13 @@ mod tests {
 
         let conn = test_conn();
         let db = Arc::new(Mutex::new(conn));
-        let handle = start_watching(db.clone(), dir.to_str().unwrap()).unwrap();
+        let handle = start_watching(
+            db.clone(),
+            ":memory:".to_string(),
+            dir.to_str().unwrap(),
+            false,
+        )
+        .unwrap();
 
         let file = dir.join("watched.txt");
         fs::write(&file, "hello").unwrap();
@@ -370,7 +830,13 @@ mod tests {
         repository::insert_file(&conn, &entry).unwrap();
 
         let db = Arc::new(Mutex::new(conn));
-        let handle = start_watching(db.clone(), dir.to_str().unwrap()).unwrap();
+        let handle = start_watching(
+            db.clone(),
+            ":memory:".to_string(),
+            dir.to_str().unwrap(),
+            false,
+        )
+        .unwrap();
 
         fs::remove_file(&file_path).unwrap();
 
@@ -392,8 +858,59 @@ mod tests {
     fn test_watcher_invalid_directory() {
         let conn = test_conn();
         let db = Arc::new(Mutex::new(conn));
-        let result = start_watching(db, "/nonexistent/dir/frogger_xyz");
+        let result = start_watching(
+            db,
+            ":memory:".to_string(),
+            "/nonexistent/dir/frogger_xyz",
+            false,
+        );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_bootstrap_scan_indexes_existing_nested_files() {
+        let dir = std::env::temp_dir().join("frogger_test_watcher_initial_recursive_scan");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("nested/deeper")).unwrap();
+
+        let file_path = dir.join("nested/deeper/seed.txt");
+        fs::write(&file_path, "seed content").unwrap();
+
+        let conn = test_conn();
+        let db = Arc::new(Mutex::new(conn));
+        let handle = start_watching(
+            db.clone(),
+            ":memory:".to_string(),
+            dir.to_str().unwrap(),
+            false,
+        )
+        .unwrap();
+        let cancel = AtomicBool::new(false);
+
+        {
+            let conn = db.lock().unwrap();
+            let cancelled = scan_directory_deep_with_progress_cancel(
+                &conn,
+                dir.to_str().unwrap(),
+                false,
+                &cancel,
+                |_, _| {},
+            );
+            assert!(!cancelled, "bootstrap scan should complete");
+        }
+
+        let file_key = canonical(&file_path);
+        let found = poll_until(&db, 5000, |conn| {
+            repository::get_by_path(conn, &file_key).unwrap().is_some()
+        });
+
+        stop_watching(handle);
+        let _ = fs::remove_dir_all(&dir);
+
+        assert!(
+            found,
+            "bootstrap scan should index existing nested files recursively"
+        );
     }
 
     #[test]
@@ -404,7 +921,13 @@ mod tests {
 
         let conn = test_conn();
         let db = Arc::new(Mutex::new(conn));
-        let handle = start_watching(db.clone(), dir.to_str().unwrap()).unwrap();
+        let handle = start_watching(
+            db.clone(),
+            ":memory:".to_string(),
+            dir.to_str().unwrap(),
+            false,
+        )
+        .unwrap();
 
         let file_path = dir.join("data.txt");
         fs::write(&file_path, "v1").unwrap();
@@ -412,15 +935,12 @@ mod tests {
         let path_str = canonical(&file_path);
 
         let created = poll_until(&db, 5000, |conn| {
-            repository::get_by_path(conn, &path_str).unwrap().is_some()
+            repository::get_by_path(conn, &path_str)
+                .unwrap()
+                .map(|entry| entry.size_bytes == Some(2))
+                .unwrap_or(false)
         });
         assert!(created, "file should be indexed after create");
-
-        {
-            let conn = db.lock().unwrap();
-            let entry = repository::get_by_path(&conn, &path_str).unwrap().unwrap();
-            assert_eq!(entry.size_bytes, Some(2));
-        }
 
         fs::write(&file_path, "version two content").unwrap();
 
@@ -528,6 +1048,36 @@ mod tests {
 
         let fts_txt = repository::search_fts(&conn, "notes", 10).unwrap();
         assert!(!fts_txt.is_empty(), "txt should be searchable by filename");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_scan_extracts_csv_content_for_fts_and_manifest_snippet() {
+        let dir = std::env::temp_dir().join("frogger_test_scan_csv_content");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let csv_path = dir.join("finance.csv");
+        fs::write(&csv_path, "project,amount\nalpha,1000\nbeta,2000\n").unwrap();
+
+        let conn = test_conn();
+        scan_directory(&conn, dir.to_str().unwrap());
+
+        let fts_hits = repository::search_fts(&conn, "alpha", 10).unwrap();
+        assert!(
+            !fts_hits.is_empty(),
+            "csv cell content should be searchable in FTS"
+        );
+
+        let csv_key = canonical(&csv_path);
+        let snippet = repository::get_ocr_text(&conn, &csv_key).unwrap();
+        assert!(
+            snippet
+                .as_ref()
+                .map(|record| record.text_content.contains("alpha"))
+                .unwrap_or(false),
+            "csv content should be persisted for organize snippets"
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }

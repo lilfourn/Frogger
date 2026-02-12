@@ -1,7 +1,12 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, act } from "@testing-library/react";
 import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import { StatusBar } from "./StatusBar";
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn().mockResolvedValue({ processed: 0, total: 0, status: "done" }),
+}));
 
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn().mockResolvedValue(vi.fn()),
@@ -43,6 +48,8 @@ describe("StatusBar", () => {
     render(<StatusBar itemCount={3} />);
     await act(async () => {});
 
+    expect(invoke).toHaveBeenCalledWith("get_indexing_status");
+
     expect(screen.queryByTestId("indexing-indicator")).not.toBeInTheDocument();
 
     act(() => {
@@ -51,6 +58,25 @@ describe("StatusBar", () => {
 
     expect(screen.getByTestId("indexing-indicator")).toBeInTheDocument();
     expect(screen.getByText("50/200 files indexed")).toBeInTheDocument();
+  });
+
+  it("shows generic indexing text while total is unknown", async () => {
+    let eventCallback: (event: { payload: unknown }) => void = () => {};
+    vi.mocked(listen).mockImplementation((_event, handler) => {
+      eventCallback = handler as typeof eventCallback;
+      return Promise.resolve(vi.fn());
+    });
+
+    render(<StatusBar itemCount={3} />);
+    await act(async () => {});
+
+    act(() => {
+      eventCallback({ payload: { processed: 0, total: 0, status: "starting" } });
+    });
+
+    expect(screen.getByTestId("indexing-indicator")).toBeInTheDocument();
+    expect(screen.getByText("Indexing...")).toBeInTheDocument();
+    expect(screen.queryByText("0/0 files indexed")).not.toBeInTheDocument();
   });
 
   it("hides indexing indicator when done", async () => {
@@ -71,6 +97,25 @@ describe("StatusBar", () => {
     act(() => {
       eventCallback({ payload: { processed: 100, total: 100, status: "done" } });
     });
+    expect(screen.queryByTestId("indexing-indicator")).not.toBeInTheDocument();
+  });
+
+  it("shows indicator when initial status is active", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({ processed: 3, total: 10, status: "active" });
+
+    render(<StatusBar itemCount={3} />);
+    await act(async () => {});
+
+    expect(screen.getByTestId("indexing-indicator")).toBeInTheDocument();
+    expect(screen.getByText("3/10 files indexed")).toBeInTheDocument();
+  });
+
+  it("hides indicator when initial status is zero-total done", async () => {
+    vi.mocked(invoke).mockResolvedValueOnce({ processed: 0, total: 0, status: "done" });
+
+    render(<StatusBar itemCount={3} />);
+    await act(async () => {});
+
     expect(screen.queryByTestId("indexing-indicator")).not.toBeInTheDocument();
   });
 });

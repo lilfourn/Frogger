@@ -7,6 +7,40 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+#[cfg(unix)]
+const EXDEV_CODE: i32 = 18;
+
+#[cfg(windows)]
+const EXDEV_CODE: i32 = 17;
+
+#[cfg(not(any(unix, windows)))]
+const EXDEV_CODE: i32 = -1;
+
+fn is_cross_device_error(err: &std::io::Error) -> bool {
+    err.raw_os_error().is_some_and(|code| code == EXDEV_CODE)
+}
+
+fn move_path_with_fallback(src: &Path, dest: &Path) -> Result<(), AppError> {
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    match fs::rename(src, dest) {
+        Ok(()) => Ok(()),
+        Err(e) if is_cross_device_error(&e) => {
+            if src.is_dir() {
+                copy_dir_recursive(src, dest)?;
+                fs::remove_dir_all(src)?;
+            } else {
+                fs::copy(src, dest)?;
+                fs::remove_file(src)?;
+            }
+            Ok(())
+        }
+        Err(e) => Err(AppError::Io(e)),
+    }
+}
+
 pub fn create_dir(path: &str) -> Result<(), AppError> {
     validate_path(path)?;
     validate_not_protected(path)?;
@@ -18,6 +52,7 @@ pub fn rename(source: &str, destination: &str) -> Result<(), AppError> {
     validate_path(source)?;
     validate_path(destination)?;
     validate_not_protected(source)?;
+    validate_not_protected(destination)?;
 
     if !Path::new(source).exists() {
         return Err(AppError::General(format!(
@@ -30,12 +65,13 @@ pub fn rename(source: &str, destination: &str) -> Result<(), AppError> {
         )));
     }
 
-    fs::rename(source, destination)?;
+    move_path_with_fallback(Path::new(source), Path::new(destination))?;
     Ok(())
 }
 
 pub fn move_files(sources: &[String], dest_dir: &str) -> Result<Vec<String>, AppError> {
     validate_path(dest_dir)?;
+    validate_not_protected(dest_dir)?;
     if !Path::new(dest_dir).is_dir() {
         return Err(AppError::General(format!(
             "destination is not a directory: {dest_dir}"
@@ -51,7 +87,7 @@ pub fn move_files(sources: &[String], dest_dir: &str) -> Result<Vec<String>, App
             .file_name()
             .ok_or_else(|| AppError::General(format!("invalid source path: {src}")))?;
         let dest = Path::new(dest_dir).join(file_name);
-        fs::rename(src_path, &dest)?;
+        move_path_with_fallback(src_path, &dest)?;
         dest_paths.push(dest.to_string_lossy().to_string());
     }
     Ok(dest_paths)
@@ -59,6 +95,7 @@ pub fn move_files(sources: &[String], dest_dir: &str) -> Result<Vec<String>, App
 
 pub fn copy_files(sources: &[String], dest_dir: &str) -> Result<Vec<String>, AppError> {
     validate_path(dest_dir)?;
+    validate_not_protected(dest_dir)?;
     if !Path::new(dest_dir).is_dir() {
         return Err(AppError::General(format!(
             "destination is not a directory: {dest_dir}"
@@ -238,7 +275,7 @@ pub fn copy_files_with_progress(
                 &dest,
                 &mut bytes_copied,
                 total_bytes,
-                &cancel,
+                cancel,
                 &emit,
             )?;
         } else {
@@ -247,7 +284,7 @@ pub fn copy_files_with_progress(
                 &dest,
                 &mut bytes_copied,
                 total_bytes,
-                &cancel,
+                cancel,
                 &emit,
             )?;
         }
@@ -256,12 +293,41 @@ pub fn copy_files_with_progress(
     Ok(dest_paths)
 }
 
+#[cfg(test)]
 pub fn trash_dir() -> Result<std::path::PathBuf, AppError> {
+    let test_trash = std::env::temp_dir().join("frogger-test-trash");
+    fs::create_dir_all(&test_trash)?;
+    Ok(test_trash)
+}
+
+#[cfg(not(test))]
+pub fn trash_dir() -> Result<std::path::PathBuf, AppError> {
+    if let Ok(custom) = std::env::var("FROGGER_TRASH_DIR") {
+        let custom_path = Path::new(&custom).to_path_buf();
+        fs::create_dir_all(&custom_path)?;
+        return Ok(custom_path);
+    }
+
     let home = dirs::home_dir()
         .ok_or_else(|| AppError::General("could not resolve home directory".to_string()))?;
     let trash = home.join(".frogger").join("trash");
-    fs::create_dir_all(&trash)?;
-    Ok(trash)
+    if fs::create_dir_all(&trash).is_ok() {
+        let probe = trash.join(".frogger_write_probe");
+        if fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&probe)
+            .is_ok()
+        {
+            let _ = fs::remove_file(probe);
+            return Ok(trash);
+        }
+    }
+
+    let fallback = std::env::temp_dir().join("frogger-trash");
+    fs::create_dir_all(&fallback)?;
+    Ok(fallback)
 }
 
 pub struct DeleteResult {
@@ -291,7 +357,7 @@ pub fn soft_delete(paths: &[String]) -> Result<Vec<DeleteResult>, AppError> {
             .ok_or_else(|| AppError::General(format!("invalid path: {src}")))?;
         let dest = item_trash_dir.join(file_name);
 
-        fs::rename(src_path, &dest)?;
+        move_path_with_fallback(src_path, &dest)?;
 
         let metadata = serde_json::json!({
             "original_path": src,
@@ -325,7 +391,7 @@ pub fn restore_from_trash(trash_path: &str, original_path: &str) -> Result<(), A
         fs::create_dir_all(parent)?;
     }
 
-    fs::rename(trash, original)?;
+    move_path_with_fallback(trash, original)?;
 
     if let Some(trash_parent) = trash.parent() {
         let _ = fs::remove_dir_all(trash_parent);
