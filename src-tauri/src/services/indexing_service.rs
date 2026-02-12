@@ -126,6 +126,13 @@ pub fn scan_directory(conn: &Connection, directory: &str) {
     scan_directory_with_progress(conn, directory, |_, _| {});
 }
 
+fn is_hidden(entry: &walkdir::DirEntry) -> bool {
+    entry
+        .file_name()
+        .to_str()
+        .is_some_and(|s| s.starts_with('.'))
+}
+
 pub fn scan_directory_with_progress<F>(conn: &Connection, directory: &str, on_progress: F)
 where
     F: Fn(usize, usize),
@@ -140,6 +147,7 @@ where
             .min_depth(1)
             .max_depth(5)
             .into_iter()
+            .filter_entry(|e| !is_hidden(e))
             .filter_map(|e| e.ok())
     };
 
