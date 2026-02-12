@@ -3,6 +3,7 @@ use std::path::Path;
 use std::sync::atomic::Ordering;
 use tauri::{command, AppHandle, Emitter, State};
 
+use crate::data::repository;
 use crate::error::AppError;
 use crate::models::file_entry::FileEntry;
 use crate::models::operation::OperationType;
@@ -11,8 +12,27 @@ use crate::services::{file_service, undo_service};
 use crate::state::AppState;
 
 #[command]
-pub fn list_directory(path: String) -> Result<Vec<FileEntry>, AppError> {
-    let dir_path = Path::new(&path);
+pub fn list_directory(
+    path: String,
+    state: State<'_, AppState>,
+) -> Result<Vec<FileEntry>, AppError> {
+    let entries = read_directory(&path)?;
+
+    if let Ok(conn) = state.db.try_lock() {
+        for entry in &entries {
+            let modified = entry.modified_at.as_deref().unwrap_or("");
+            if repository::needs_reindex(&conn, &entry.path, modified) {
+                let _ = repository::insert_file(&conn, entry);
+                let _ = repository::insert_fts(&conn, &entry.path, &entry.name, "");
+            }
+        }
+    }
+
+    Ok(entries)
+}
+
+fn read_directory(path: &str) -> Result<Vec<FileEntry>, AppError> {
+    let dir_path = Path::new(path);
     if !dir_path.is_dir() {
         return Err(AppError::General(format!("not a directory: {path}")));
     }
@@ -285,6 +305,7 @@ pub fn redo_operation(state: State<'_, AppState>) -> Result<String, AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::data::migrations;
     use std::fs::File;
 
     #[test]
@@ -296,10 +317,10 @@ mod tests {
         File::create(dir.join("file_b.md")).unwrap();
         fs::create_dir_all(dir.join("subdir")).unwrap();
 
-        let result = list_directory(dir.to_string_lossy().to_string()).unwrap();
+        let result = read_directory(&dir.to_string_lossy()).unwrap();
 
         assert_eq!(result.len(), 3);
-        assert!(result[0].is_directory); // dirs first
+        assert!(result[0].is_directory);
         assert_eq!(result[0].name, "subdir");
 
         let names: Vec<&str> = result.iter().map(|e| e.name.as_str()).collect();
@@ -311,7 +332,7 @@ mod tests {
 
     #[test]
     fn test_list_directory_invalid_path() {
-        let result = list_directory("/nonexistent/path/1234567890".to_string());
+        let result = read_directory("/nonexistent/path/1234567890");
         assert!(result.is_err());
     }
 
@@ -336,13 +357,13 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("test.txt"), "hello world").unwrap();
 
-        let result = list_directory(dir.to_string_lossy().to_string()).unwrap();
+        let result = read_directory(&dir.to_string_lossy()).unwrap();
         let file = &result[0];
 
         assert_eq!(file.name, "test.txt");
         assert_eq!(file.extension.as_deref(), Some("txt"));
         assert_eq!(file.mime_type.as_deref(), Some("text/plain"));
-        assert_eq!(file.size_bytes, Some(11)); // "hello world" = 11 bytes
+        assert_eq!(file.size_bytes, Some(11));
         assert!(!file.is_directory);
         assert!(file.created_at.is_some());
         assert!(file.modified_at.is_some());
@@ -350,6 +371,36 @@ mod tests {
             file.parent_path.as_deref(),
             Some(dir.to_string_lossy().as_ref())
         );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_list_directory_indexes_to_db() {
+        let dir = std::env::temp_dir().join("frogger_test_list_index");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        File::create(dir.join("indexed.txt")).unwrap();
+
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        migrations::run_migrations(&conn).unwrap();
+
+        let entries = read_directory(&dir.to_string_lossy()).unwrap();
+        for entry in &entries {
+            let modified = entry.modified_at.as_deref().unwrap_or("");
+            if repository::needs_reindex(&conn, &entry.path, modified) {
+                repository::insert_file(&conn, entry).unwrap();
+                repository::insert_fts(&conn, &entry.path, &entry.name, "").unwrap();
+            }
+        }
+
+        let file_path = dir.join("indexed.txt").to_string_lossy().to_string();
+        let stored = repository::get_by_path(&conn, &file_path).unwrap();
+        assert!(stored.is_some());
+        assert_eq!(stored.unwrap().name, "indexed.txt");
+
+        let fts = repository::search_fts(&conn, "indexed", 10).unwrap();
+        assert_eq!(fts.len(), 1);
 
         let _ = fs::remove_dir_all(&dir);
     }

@@ -8,6 +8,7 @@ mod state;
 
 use commands::{file_commands, indexing_commands, search_commands};
 use data::migrations;
+use services::indexing_service;
 use state::AppState;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
@@ -50,10 +51,20 @@ pub fn run() {
             let (conn, db_path) = init_db(app)?;
             app.manage(AppState {
                 db: Mutex::new(conn),
-                db_path,
+                db_path: db_path.clone(),
                 cancel_flag: Arc::new(AtomicBool::new(false)),
                 watcher_handle: Mutex::new(None),
             });
+
+            let bg_db_path = db_path;
+            tauri::async_runtime::spawn_blocking(move || {
+                let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/"));
+                if let Ok(bg_conn) = rusqlite::Connection::open(&bg_db_path) {
+                    let _ = migrations::run_migrations(&bg_conn);
+                    indexing_service::scan_directory(&bg_conn, &home.to_string_lossy());
+                }
+            });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

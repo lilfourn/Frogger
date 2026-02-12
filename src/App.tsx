@@ -1,4 +1,5 @@
 import { useEffect, useMemo } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { listDirectory } from "./services/fileService";
 import { useFileStore } from "./stores/fileStore";
 import { AppLayout } from "./components/layout/AppLayout";
@@ -101,6 +102,10 @@ function App() {
     const defaultPath = navigator.userAgent.includes("Windows") ? "C:\\Users" : "/Users";
     if (!currentPath) navigateTo(defaultPath);
   }, [currentPath, navigateTo]);
+
+  useEffect(() => {
+    invoke("start_indexing", { directory: "/Users" }).catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (!currentPath) return;

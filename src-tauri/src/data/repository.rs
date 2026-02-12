@@ -299,6 +299,22 @@ pub fn search_vec(
     Ok(results)
 }
 
+// --- Incremental indexing ---
+
+pub fn needs_reindex(conn: &Connection, file_path: &str, modified_at: &str) -> bool {
+    match conn
+        .query_row(
+            "SELECT modified_at FROM files WHERE path = ?1",
+            params![file_path],
+            |row| row.get::<_, Option<String>>(0),
+        )
+        .optional()
+    {
+        Ok(Some(Some(db_modified))) => db_modified.as_str() < modified_at,
+        _ => true,
+    }
+}
+
 // --- Cascade delete (removes file from all index tables) ---
 
 pub fn delete_file_index(conn: &Connection, file_path: &str) -> Result<(), AppError> {
@@ -570,5 +586,30 @@ mod tests {
         assert!(search_vec(&conn, &vec![0.1f32; 384], 10)
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn test_needs_reindex() {
+        let conn = setup_db();
+        let path = "/home/user/test.txt";
+
+        assert!(needs_reindex(&conn, path, "2025-06-01T00:00:00Z"));
+
+        let file = FileEntry {
+            path: path.to_string(),
+            name: "test.txt".to_string(),
+            extension: Some("txt".to_string()),
+            mime_type: None,
+            size_bytes: Some(100),
+            created_at: None,
+            modified_at: Some("2025-06-01T00:00:00Z".to_string()),
+            is_directory: false,
+            parent_path: Some("/home/user".to_string()),
+        };
+        insert_file(&conn, &file).unwrap();
+
+        assert!(!needs_reindex(&conn, path, "2025-06-01T00:00:00Z"));
+        assert!(!needs_reindex(&conn, path, "2025-05-01T00:00:00Z"));
+        assert!(needs_reindex(&conn, path, "2025-07-01T00:00:00Z"));
     }
 }

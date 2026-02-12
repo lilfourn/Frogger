@@ -46,7 +46,7 @@ pub fn file_entry_from_path(path: &Path) -> Option<FileEntry> {
     })
 }
 
-fn process_event(conn: &Connection, path: &Path) {
+pub fn process_event(conn: &Connection, path: &Path) {
     if path.exists() {
         if let Some(entry) = file_entry_from_path(path) {
             let _ = repository::insert_file(conn, &entry);
@@ -119,6 +119,29 @@ pub fn start_watching(
 
 pub fn stop_watching(handle: IndexingHandle) {
     drop(handle);
+}
+
+pub fn scan_directory(conn: &Connection, directory: &str) {
+    let dir = Path::new(directory);
+    if !dir.is_dir() {
+        return;
+    }
+
+    for entry in walkdir::WalkDir::new(dir)
+        .min_depth(1)
+        .max_depth(5)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
+        let path = entry.path();
+        if let Some(file_entry) = file_entry_from_path(path) {
+            let modified = file_entry.modified_at.as_deref().unwrap_or("");
+            if !repository::needs_reindex(conn, &file_entry.path, modified) {
+                continue;
+            }
+            process_event(conn, path);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -304,5 +327,76 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
 
         assert!(updated, "file size should update after modify");
+    }
+
+    #[test]
+    fn test_scan_directory_indexes_new_files() {
+        let dir = std::env::temp_dir().join("frogger_test_scan_new");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        fs::write(dir.join("a.txt"), "aaa").unwrap();
+        fs::write(dir.join("sub/b.txt"), "bbb").unwrap();
+
+        let conn = test_conn();
+        scan_directory(&conn, dir.to_str().unwrap());
+
+        let a_path = canonical(&dir.join("a.txt"));
+        let b_path = canonical(&dir.join("sub/b.txt"));
+
+        assert!(
+            repository::get_by_path(&conn, &a_path).unwrap().is_some(),
+            "a.txt should be indexed"
+        );
+        assert!(
+            repository::get_by_path(&conn, &b_path).unwrap().is_some(),
+            "sub/b.txt should be indexed"
+        );
+
+        let fts = repository::search_fts(&conn, "a", 10).unwrap();
+        assert!(!fts.is_empty(), "FTS should find a.txt");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_scan_directory_skips_unchanged() {
+        let dir = std::env::temp_dir().join("frogger_test_scan_skip");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("existing.txt"), "hello").unwrap();
+
+        let conn = test_conn();
+
+        // First scan indexes the file
+        scan_directory(&conn, dir.to_str().unwrap());
+
+        let path_str = canonical(&dir.join("existing.txt"));
+        let entry = repository::get_by_path(&conn, &path_str).unwrap().unwrap();
+        assert_eq!(entry.size_bytes, Some(5));
+
+        // FTS count should be 1
+        let fts_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM files_fts WHERE file_path = ?1",
+                rusqlite::params![path_str],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(fts_count, 1);
+
+        // Second scan should skip (file unchanged)
+        scan_directory(&conn, dir.to_str().unwrap());
+
+        // FTS count should still be 1 (not duplicated)
+        let fts_count_after: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM files_fts WHERE file_path = ?1",
+                rusqlite::params![path_str],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(fts_count_after, 1);
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }
