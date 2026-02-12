@@ -36,7 +36,7 @@ fn init_db(
     Ok((conn, db_path))
 }
 
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -57,11 +57,25 @@ pub fn run() {
             });
 
             let bg_db_path = db_path;
+            let handle = app.handle().clone();
             tauri::async_runtime::spawn_blocking(move || {
                 let home = dirs::home_dir().unwrap_or_else(|| std::path::PathBuf::from("/"));
                 if let Ok(bg_conn) = rusqlite::Connection::open(&bg_db_path) {
                     let _ = migrations::run_migrations(&bg_conn);
-                    indexing_service::scan_directory(&bg_conn, &home.to_string_lossy());
+                    indexing_service::scan_directory_with_progress(
+                        &bg_conn,
+                        &home.to_string_lossy(),
+                        |processed, total| {
+                            let _ = handle.emit(
+                                "indexing-progress",
+                                serde_json::json!({
+                                    "processed": processed,
+                                    "total": total,
+                                    "status": if processed >= total { "done" } else { "active" }
+                                }),
+                            );
+                        },
+                    );
                 }
             });
 

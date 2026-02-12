@@ -121,27 +121,52 @@ pub fn stop_watching(handle: IndexingHandle) {
     drop(handle);
 }
 
+#[cfg(test)]
 pub fn scan_directory(conn: &Connection, directory: &str) {
+    scan_directory_with_progress(conn, directory, |_, _| {});
+}
+
+pub fn scan_directory_with_progress<F>(conn: &Connection, directory: &str, on_progress: F)
+where
+    F: Fn(usize, usize),
+{
     let dir = Path::new(directory);
     if !dir.is_dir() {
         return;
     }
 
-    for entry in walkdir::WalkDir::new(dir)
-        .min_depth(1)
-        .max_depth(5)
-        .into_iter()
-        .filter_map(|e| e.ok())
-    {
+    let walker = || {
+        walkdir::WalkDir::new(dir)
+            .min_depth(1)
+            .max_depth(5)
+            .into_iter()
+            .filter_map(|e| e.ok())
+    };
+
+    let total = walker().count();
+    let mut processed = 0usize;
+
+    on_progress(0, total);
+
+    for entry in walker() {
+        processed += 1;
         let path = entry.path();
         if let Some(file_entry) = file_entry_from_path(path) {
             let modified = file_entry.modified_at.as_deref().unwrap_or("");
             if !repository::needs_reindex(conn, &file_entry.path, modified) {
+                if processed % 100 == 0 {
+                    on_progress(processed, total);
+                }
                 continue;
             }
             process_event(conn, path);
         }
+        if processed % 100 == 0 {
+            on_progress(processed, total);
+        }
     }
+
+    on_progress(total, total);
 }
 
 #[cfg(test)]
