@@ -105,11 +105,9 @@ mod tests {
         let fts = vec![
             FtsResult {
                 file_path: "/a.txt".into(),
-                rank: -1.0,
             },
             FtsResult {
                 file_path: "/b.txt".into(),
-                rank: -0.5,
             },
         ];
         let vec = vec![

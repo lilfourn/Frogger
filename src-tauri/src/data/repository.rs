@@ -24,6 +24,7 @@ pub fn insert_file(conn: &Connection, entry: &FileEntry) -> Result<i64, AppError
     Ok(conn.last_insert_rowid())
 }
 
+#[allow(dead_code)]
 pub fn list_by_parent(conn: &Connection, parent_path: &str) -> Result<Vec<FileEntry>, AppError> {
     let mut stmt = conn.prepare(
         "SELECT path, name, extension, mime_type, size_bytes, created_at, modified_at, is_directory, parent_path
@@ -50,6 +51,7 @@ pub fn list_by_parent(conn: &Connection, parent_path: &str) -> Result<Vec<FileEn
     Ok(entries)
 }
 
+#[allow(dead_code)]
 pub fn get_by_path(conn: &Connection, path: &str) -> Result<Option<FileEntry>, AppError> {
     let mut stmt = conn.prepare(
         "SELECT path, name, extension, mime_type, size_bytes, created_at, modified_at, is_directory, parent_path
@@ -75,6 +77,7 @@ pub fn get_by_path(conn: &Connection, path: &str) -> Result<Option<FileEntry>, A
     Ok(entry)
 }
 
+#[allow(dead_code)]
 pub fn delete_by_path(conn: &Connection, path: &str) -> Result<usize, AppError> {
     let count = conn.execute("DELETE FROM files WHERE path = ?1", params![path])?;
     Ok(count)
@@ -218,6 +221,7 @@ pub fn get_ocr_text(conn: &Connection, file_path: &str) -> Result<Option<OcrReco
     Ok(record)
 }
 
+#[allow(dead_code)]
 pub fn delete_ocr_text(conn: &Connection, file_path: &str) -> Result<usize, AppError> {
     let count = conn.execute(
         "DELETE FROM ocr_text WHERE file_path = ?1",
@@ -241,27 +245,18 @@ pub fn insert_fts(
     Ok(())
 }
 
-pub fn delete_fts(conn: &Connection, file_path: &str) -> Result<(), AppError> {
-    conn.execute(
-        "DELETE FROM files_fts WHERE file_path = ?1",
-        params![file_path],
-    )?;
-    Ok(())
-}
-
 pub fn search_fts(
     conn: &Connection,
     query: &str,
     limit: usize,
 ) -> Result<Vec<FtsResult>, AppError> {
     let mut stmt = conn.prepare(
-        "SELECT file_path, rank FROM files_fts WHERE files_fts MATCH ?1 ORDER BY rank LIMIT ?2",
+        "SELECT file_path FROM files_fts WHERE files_fts MATCH ?1 ORDER BY rank LIMIT ?2",
     )?;
     let results = stmt
         .query_map(params![query, limit as i64], |row| {
             Ok(FtsResult {
                 file_path: row.get(0)?,
-                rank: row.get(1)?,
             })
         })?
         .filter_map(|r| r.ok())
@@ -280,14 +275,6 @@ pub fn insert_vec(conn: &Connection, file_path: &str, embedding: &[f32]) -> Resu
     conn.execute(
         "INSERT OR REPLACE INTO vec_index(file_path, embedding) VALUES (?1, ?2)",
         params![file_path, bytes],
-    )?;
-    Ok(())
-}
-
-pub fn delete_vec(conn: &Connection, file_path: &str) -> Result<(), AppError> {
-    conn.execute(
-        "DELETE FROM vec_index WHERE file_path = ?1",
-        params![file_path],
     )?;
     Ok(())
 }

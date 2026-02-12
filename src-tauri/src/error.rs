@@ -20,9 +20,6 @@ pub enum AppError {
     #[error("Embedding error: {0}")]
     Embedding(String),
 
-    #[error("Search error: {0}")]
-    Search(String),
-
     #[error("Watcher error: {0}")]
     Watcher(String),
 }

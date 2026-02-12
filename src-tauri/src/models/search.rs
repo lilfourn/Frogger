@@ -21,11 +21,11 @@ pub struct SearchResult {
 #[derive(Debug, Clone)]
 pub struct FtsResult {
     pub file_path: String,
-    pub rank: f64,
 }
 
 #[derive(Debug, Clone)]
 pub struct VecResult {
     pub file_path: String,
+    #[allow(dead_code)]
     pub distance: f64,
 }
