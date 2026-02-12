@@ -126,11 +126,80 @@ pub fn scan_directory(conn: &Connection, directory: &str) {
     scan_directory_with_progress(conn, directory, |_, _| {});
 }
 
-fn is_hidden(entry: &walkdir::DirEntry) -> bool {
-    entry
-        .file_name()
-        .to_str()
-        .is_some_and(|s| s.starts_with('.'))
+const SKIP_DIRS: &[&str] = &[
+    // System / OS
+    "Library",
+    "Applications",
+    "System",
+    "bin",
+    "sbin",
+    "usr",
+    "var",
+    "etc",
+    "tmp",
+    "private",
+    // Build artifacts / dependencies
+    "node_modules",
+    "target",
+    "build",
+    "dist",
+    "out",
+    "__pycache__",
+    ".venv",
+    "venv",
+    "Pods",
+    // VCS / IDE
+    ".git",
+    ".svn",
+    ".idea",
+    ".vscode",
+    // Caches
+    "CachedData",
+    "Cache",
+    "Caches",
+    "GPUCache",
+    "ShaderCache",
+    "Code Cache",
+    "DerivedData",
+];
+
+const SKIP_EXTENSIONS: &[&str] = &[
+    "o", "a", "dylib", "so", "dll", "exe", "class", "pyc", "pyo", "wasm", "map",
+];
+
+fn should_skip(entry: &walkdir::DirEntry) -> bool {
+    let name = entry.file_name().to_string_lossy();
+
+    if name.starts_with('.') {
+        return true;
+    }
+
+    if entry.file_type().is_dir() {
+        if SKIP_DIRS.iter().any(|&d| name == d) {
+            return true;
+        }
+        if name.ends_with(".app")
+            || name.ends_with(".framework")
+            || name.ends_with(".bundle")
+            || name.ends_with(".xcodeproj")
+            || name.ends_with(".xcworkspace")
+        {
+            return true;
+        }
+    }
+
+    if entry.file_type().is_file() {
+        if let Some(ext) = Path::new(name.as_ref())
+            .extension()
+            .and_then(|e| e.to_str())
+        {
+            if SKIP_EXTENSIONS.contains(&ext) {
+                return true;
+            }
+        }
+    }
+
+    false
 }
 
 pub fn scan_directory_with_progress<F>(conn: &Connection, directory: &str, on_progress: F)
@@ -147,7 +216,7 @@ where
             .min_depth(1)
             .max_depth(5)
             .into_iter()
-            .filter_entry(|e| !is_hidden(e))
+            .filter_entry(|e| !should_skip(e))
             .filter_map(|e| e.ok())
     };
 
