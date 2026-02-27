@@ -10,22 +10,35 @@ export function useSearch() {
   const currentPath = useFileStore((s) => s.currentPath);
 
   useEffect(() => {
+    let active = true;
+
     if (query.length < 2) {
       setResults([]);
+      setIsSearching(false);
       return;
     }
 
     setIsSearching(true);
     const timer = setTimeout(() => {
       search(query, 20, currentPath || undefined)
-        .then(setResults)
+        .then((results) => {
+          if (!active) return;
+          setResults(results);
+        })
         .catch((err) => {
+          if (!active) return;
           console.error("[Search] Failed:", err);
           setResults([]);
         })
-        .finally(() => setIsSearching(false));
+        .finally(() => {
+          if (!active) return;
+          setIsSearching(false);
+        });
     }, 150);
 
-    return () => clearTimeout(timer);
+    return () => {
+      active = false;
+      clearTimeout(timer);
+    };
   }, [query, setResults, setIsSearching, currentPath]);
 }

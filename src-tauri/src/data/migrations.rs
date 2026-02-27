@@ -109,6 +109,17 @@ CREATE TABLE IF NOT EXISTS settings (
 const SCHEMA_V2_VEC: &str =
     "CREATE VIRTUAL TABLE IF NOT EXISTS vec_index USING vec0(file_path TEXT PRIMARY KEY, embedding float[384])";
 
+const SCHEMA_V4_VEC_META: &str = "
+CREATE TABLE IF NOT EXISTS vec_embedding_meta (
+    file_path TEXT PRIMARY KEY NOT NULL,
+    embedded_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_vec_embedding_meta_embedded_at
+    ON vec_embedding_meta(embedded_at);
+";
+
 fn ensure_permission_mode_columns(conn: &Connection) -> Result<(), AppError> {
     let columns: Vec<String> = conn
         .prepare("PRAGMA table_info(permission_scopes)")?
@@ -187,14 +198,40 @@ fn ensure_permission_default_settings(conn: &Connection) -> Result<(), AppError>
     Ok(())
 }
 
+fn cleanup_legacy_embedding_settings(conn: &Connection) -> Result<(), AppError> {
+    conn.execute_batch(
+        "DELETE FROM settings WHERE key IN (
+            'embedding_provider',
+            'embedding_model',
+            'embedding_dimensions',
+            'embedding_remote_enabled',
+            'embedding_fallback_local'
+        );",
+    )?;
+    Ok(())
+}
+
+fn ensure_vec_embedding_meta(conn: &Connection) -> Result<(), AppError> {
+    conn.execute_batch(SCHEMA_V4_VEC_META)?;
+    conn.execute(
+        "INSERT OR IGNORE INTO vec_embedding_meta (file_path, embedded_at, updated_at)
+         SELECT file_path, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+         FROM vec_index",
+        [],
+    )?;
+    Ok(())
+}
+
 pub fn run_migrations(conn: &Connection) -> Result<(), AppError> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.execute_batch(SCHEMA_V1)?;
     ensure_permission_mode_columns(conn)?;
     conn.execute_batch(SCHEMA_V2)?;
     conn.execute(SCHEMA_V2_VEC, [])?;
+    ensure_vec_embedding_meta(conn)?;
     conn.execute_batch(SCHEMA_V3)?;
     ensure_permission_default_settings(conn)?;
+    cleanup_legacy_embedding_settings(conn)?;
     Ok(())
 }
 
@@ -272,6 +309,7 @@ mod tests {
         assert!(tables.contains(&"chat_history".to_string()));
         assert!(tables.contains(&"api_audit_log".to_string()));
         assert!(tables.contains(&"vec_index".to_string()));
+        assert!(tables.contains(&"vec_embedding_meta".to_string()));
 
         let has_fts: bool = conn
             .query_row(
@@ -331,5 +369,47 @@ mod tests {
             )
             .unwrap();
         assert_eq!(result, "/test/file.txt");
+
+        // Re-running migrations should backfill metadata for pre-existing vec rows.
+        run_migrations(&conn).unwrap();
+
+        let has_meta: bool = conn
+            .query_row(
+                "SELECT COUNT(*) > 0 FROM vec_embedding_meta WHERE file_path = ?1",
+                rusqlite::params!["/test/file.txt"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(has_meta);
+    }
+
+    #[test]
+    fn test_legacy_embedding_settings_are_cleaned_up() {
+        let conn = test_conn();
+        run_migrations(&conn).unwrap();
+
+        // Simulate legacy settings that would exist from an older version
+        conn.execute(
+            "INSERT OR REPLACE INTO settings(key, value) VALUES ('embedding_provider', 'openai')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT OR REPLACE INTO settings(key, value) VALUES ('embedding_model', 'text-embedding-3-small')",
+            [],
+        )
+        .unwrap();
+
+        // Re-run migrations to trigger cleanup
+        run_migrations(&conn).unwrap();
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM settings WHERE key IN ('embedding_provider', 'embedding_model', 'embedding_dimensions', 'embedding_remote_enabled', 'embedding_fallback_local')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0);
     }
 }

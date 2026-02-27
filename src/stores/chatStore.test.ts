@@ -61,4 +61,96 @@ describe("chatStore", () => {
     useChatStore.getState().setSessionId("abc-123");
     expect(useChatStore.getState().sessionId).toBe("abc-123");
   });
+
+  it("keeps organize progress monotonic by sequence", () => {
+    const store = useChatStore.getState();
+
+    store.setOrganizeProgress({
+      sessionId: "organize-1",
+      rootPath: "/tmp/project",
+      phase: "indexing",
+      processed: 10,
+      total: 100,
+      percent: 10,
+      combinedPercent: 10,
+      message: "Indexing 10/100",
+      sequence: 2,
+    });
+
+    store.setOrganizeProgress({
+      sessionId: "organize-1",
+      rootPath: "/tmp/project",
+      phase: "indexing",
+      processed: 5,
+      total: 100,
+      percent: 5,
+      combinedPercent: 5,
+      message: "Stale",
+      sequence: 1,
+    });
+
+    const afterStale = useChatStore.getState().organize.progress;
+    expect(afterStale?.processed).toBe(10);
+    expect(afterStale?.sequence).toBe(2);
+
+    store.setOrganizeProgress({
+      sessionId: "organize-1",
+      rootPath: "/tmp/project",
+      phase: "planning",
+      processed: 40,
+      total: 100,
+      percent: 40,
+      combinedPercent: 35,
+      message: "Planning",
+      sequence: 3,
+    });
+
+    store.setOrganizeProgress({
+      sessionId: "organize-1",
+      rootPath: "/tmp/project",
+      phase: "indexing",
+      processed: 90,
+      total: 100,
+      percent: 90,
+      combinedPercent: 9,
+      message: "Out-of-order phase",
+      sequence: 4,
+    });
+
+    const latest = useChatStore.getState().organize.progress;
+    expect(latest?.sequence).toBe(4);
+    expect(latest?.combinedPercent).toBe(35);
+  });
+
+  it("ignores non-terminal updates after terminal organize phases", () => {
+    const store = useChatStore.getState();
+
+    store.setOrganizeProgress({
+      sessionId: "organize-1",
+      rootPath: "/tmp/project",
+      phase: "done",
+      processed: 100,
+      total: 100,
+      percent: 100,
+      combinedPercent: 100,
+      message: "Done",
+      sequence: 10,
+    });
+
+    store.setOrganizeProgress({
+      sessionId: "organize-1",
+      rootPath: "/tmp/project",
+      phase: "indexing",
+      processed: 60,
+      total: 100,
+      percent: 60,
+      combinedPercent: 6,
+      message: "Late event",
+      sequence: 11,
+    });
+
+    const progress = useChatStore.getState().organize.progress;
+    expect(progress?.phase).toBe("done");
+    expect(progress?.sequence).toBe(10);
+  });
 });

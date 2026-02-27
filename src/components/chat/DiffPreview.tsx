@@ -6,6 +6,7 @@ import { describeAction, getActionFilePaths } from "../../utils/actionParser";
 interface DiffPreviewProps {
   actions: FileAction[];
   label?: string;
+  denyLabel?: string;
   onApproveAll: (actions: FileAction[]) => void;
   onDenyAll: () => void;
 }
@@ -76,7 +77,13 @@ function groupActions(actions: FileAction[]): ActionGroup[] {
   return groups;
 }
 
-export function DiffPreview({ actions, label, onApproveAll, onDenyAll }: DiffPreviewProps) {
+export function DiffPreview({
+  actions,
+  label,
+  denyLabel = "Reject",
+  onApproveAll,
+  onDenyAll,
+}: DiffPreviewProps) {
   const [expanded, setExpanded] = useState(true);
   const [status, setStatus] = useState<"pending" | "running" | "done" | "denied">("pending");
   const useGrouped = actions.length > 5;
@@ -101,6 +108,7 @@ export function DiffPreview({ actions, label, onApproveAll, onDenyAll }: DiffPre
   const headerText = label
     ? `${label} — ${actions.length} operation${actions.length > 1 ? "s" : ""}`
     : `${actions.length} operation${actions.length > 1 ? "s" : ""}`;
+  const deniedText = denyLabel === "Cancel" ? "Cancelled" : "Rejected";
 
   return (
     <div className="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-secondary)]">
@@ -159,7 +167,7 @@ export function DiffPreview({ actions, label, onApproveAll, onDenyAll }: DiffPre
             onClick={handleDeny}
             className="flex items-center gap-1 rounded px-2.5 py-1 text-xs text-[var(--color-text-secondary)] hover:bg-[var(--color-border)]"
           >
-            <X size={12} /> Reject
+            <X size={12} /> {denyLabel}
           </button>
         </div>
       )}
@@ -178,7 +186,7 @@ export function DiffPreview({ actions, label, onApproveAll, onDenyAll }: DiffPre
 
       {status === "denied" && (
         <div className="flex items-center gap-1 border-t border-[var(--color-border)] px-3 py-2 text-xs text-[var(--color-text-secondary)]">
-          <X size={12} /> Rejected
+          <X size={12} /> {deniedText}
         </div>
       )}
     </div>

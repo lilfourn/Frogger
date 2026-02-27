@@ -1,16 +1,127 @@
 use std::fs;
+use std::io::Read;
 use std::path::Path;
 use std::sync::atomic::Ordering;
 use tauri::{command, AppHandle, Emitter, State};
 
-use crate::data::repository;
 use crate::error::AppError;
 use crate::models::file_entry::FileEntry;
 use crate::models::operation::OperationType;
 use crate::models::volume::VolumeInfo;
 use crate::services::permission_service::{self, PermissionCapability};
 use crate::services::{file_service, undo_service};
+use crate::shell::safety::validate_path;
 use crate::state::AppState;
+use sha2::{Digest, Sha256};
+
+fn lock_db_or_recover(state: &AppState) -> std::sync::MutexGuard<'_, rusqlite::Connection> {
+    state
+        .db
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn record_operation_or_rollback<F, R>(
+    state: &AppState,
+    operation_name: &str,
+    record: F,
+    rollback: R,
+) -> Result<(), AppError>
+where
+    F: FnOnce(&rusqlite::Connection) -> Result<(), AppError>,
+    R: FnOnce() -> Result<(), AppError>,
+{
+    let record_result = {
+        let conn = lock_db_or_recover(state);
+        record(&conn)
+    };
+
+    if let Err(record_err) = record_result {
+        if let Err(rollback_err) = rollback() {
+            return Err(AppError::General(format!(
+                "{operation_name} succeeded, undo logging failed ({record_err}), and rollback failed ({rollback_err})"
+            )));
+        }
+        return Err(AppError::General(format!(
+            "{operation_name} succeeded but undo logging failed; operation was rolled back: {record_err}"
+        )));
+    }
+
+    Ok(())
+}
+
+fn rollback_copied_paths(paths: &[String]) -> Result<(), AppError> {
+    for path in paths {
+        let p = Path::new(path);
+        if !p.exists() {
+            continue;
+        }
+        if p.is_dir() {
+            std::fs::remove_dir_all(p)?;
+        } else {
+            std::fs::remove_file(p)?;
+        }
+    }
+    Ok(())
+}
+
+fn rollback_moved_paths(sources: &[String], dest_paths: &[String]) -> Result<(), AppError> {
+    for (source, dest) in sources.iter().zip(dest_paths.iter()) {
+        let src_parent = Path::new(source)
+            .parent()
+            .ok_or_else(|| AppError::General(format!("invalid source path: {source}")))?
+            .to_string_lossy()
+            .to_string();
+        if !Path::new(dest).exists() {
+            continue;
+        }
+        file_service::move_files(std::slice::from_ref(dest), &src_parent)?;
+    }
+    Ok(())
+}
+
+fn rollback_deleted_paths(results: &[file_service::DeleteResult]) -> Result<(), AppError> {
+    for result in results {
+        file_service::restore_from_trash(&result.trash_path, &result.original_path)?;
+    }
+    Ok(())
+}
+
+fn read_utf8_prefix(path: &Path, max_bytes: usize) -> Result<String, AppError> {
+    let mut buf = vec![0u8; max_bytes];
+    let mut file = fs::File::open(path)?;
+    file.read_exact(&mut buf)?;
+
+    match String::from_utf8(buf) {
+        Ok(text) => Ok(text),
+        Err(err) => {
+            let bytes = err.into_bytes();
+            let valid_up_to = std::str::from_utf8(&bytes)
+                .map(|_| bytes.len())
+                .unwrap_or_else(|utf8_err| utf8_err.valid_up_to());
+            if valid_up_to == 0 {
+                return Err(AppError::General("file is not valid UTF-8".to_string()));
+            }
+
+            String::from_utf8(bytes[..valid_up_to].to_vec())
+                .map_err(|_| AppError::General("file is not valid UTF-8".to_string()))
+        }
+    }
+}
+
+fn hash_file_sha256(path: &Path) -> Result<String, AppError> {
+    let mut file = fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 8192];
+    loop {
+        let count = file.read(&mut buf)?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buf[..count]);
+    }
+    Ok(format!("{:x}", hasher.finalize()))
+}
 
 #[command]
 pub fn list_directory(
@@ -18,6 +129,8 @@ pub fn list_directory(
     allow_once: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<Vec<FileEntry>, AppError> {
+    validate_path(&path)?;
+
     let allow_once = allow_once.unwrap_or(false);
     {
         let conn = state
@@ -34,29 +147,6 @@ pub fn list_directory(
     }
 
     let entries = read_directory(&path)?;
-
-    if let Ok(conn) = state.db.try_lock() {
-        if let Ok(policy) = permission_service::load_policy_cache_entry(&conn, &state) {
-            for entry in &entries {
-                if permission_service::enforce_with_cached_policy(
-                    &policy,
-                    &entry.path,
-                    PermissionCapability::Indexing,
-                    false,
-                )
-                .is_err()
-                {
-                    continue;
-                }
-                let modified = entry.modified_at.as_deref().unwrap_or("");
-                if repository::needs_reindex(&conn, &entry.path, modified) {
-                    let _ = repository::insert_file(&conn, entry);
-                    let _ = repository::insert_fts(&conn, &entry.path, &entry.name, "");
-                }
-            }
-        }
-    }
-
     Ok(entries)
 }
 
@@ -194,30 +284,43 @@ pub fn create_directory(
     state: State<'_, AppState>,
 ) -> Result<(), AppError> {
     let allow_once = allow_once.unwrap_or(false);
-    let conn = state
-        .db
-        .lock()
-        .map_err(|e| AppError::General(e.to_string()))?;
-    permission_service::enforce_cached(
-        &conn,
-        &state,
-        &path,
-        PermissionCapability::Modification,
-        allow_once,
-    )?;
-    drop(conn);
+    {
+        let conn = lock_db_or_recover(state.inner());
+        permission_service::enforce_cached(
+            &conn,
+            &state,
+            &path,
+            PermissionCapability::Modification,
+            allow_once,
+        )?;
+    }
 
+    let existed_before = Path::new(&path).exists();
     file_service::create_dir(&path)?;
-    let conn = state.db.lock().unwrap();
     let meta = serde_json::json!({ "path": path });
-    undo_service::record_operation(
-        &conn,
-        OperationType::CreateDir,
-        "create_dir",
-        "remove_dir",
-        &[path],
-        Some(&meta.to_string()),
+    let affected_paths = vec![path.clone()];
+
+    record_operation_or_rollback(
+        state.inner(),
+        "create_directory",
+        |conn| {
+            undo_service::record_operation(
+                conn,
+                OperationType::CreateDir,
+                "create_dir",
+                "remove_dir",
+                &affected_paths,
+                Some(&meta.to_string()),
+            )
+        },
+        || {
+            if !existed_before && Path::new(&path).is_dir() {
+                std::fs::remove_dir(&path)?;
+            }
+            Ok(())
+        },
     )?;
+
     Ok(())
 }
 
@@ -230,10 +333,7 @@ pub fn rename_file(
 ) -> Result<(), AppError> {
     let allow_once = allow_once.unwrap_or(false);
     {
-        let conn = state
-            .db
-            .lock()
-            .map_err(|e| AppError::General(e.to_string()))?;
+        let conn = lock_db_or_recover(state.inner());
         permission_service::enforce_cached(
             &conn,
             &state,
@@ -251,16 +351,30 @@ pub fn rename_file(
     }
 
     file_service::rename(&source, &destination)?;
-    let conn = state.db.lock().unwrap();
     let meta = serde_json::json!({ "source": source, "destination": destination });
-    undo_service::record_operation(
-        &conn,
-        OperationType::Rename,
-        "rename",
-        "rename_inverse",
-        &[source],
-        Some(&meta.to_string()),
+    let affected_paths = vec![source.clone()];
+
+    record_operation_or_rollback(
+        state.inner(),
+        "rename_file",
+        |conn| {
+            undo_service::record_operation(
+                conn,
+                OperationType::Rename,
+                "rename",
+                "rename_inverse",
+                &affected_paths,
+                Some(&meta.to_string()),
+            )
+        },
+        || {
+            if Path::new(&destination).exists() && !Path::new(&source).exists() {
+                file_service::rename(&destination, &source)?;
+            }
+            Ok(())
+        },
     )?;
+
     Ok(())
 }
 
@@ -273,10 +387,7 @@ pub fn move_files(
 ) -> Result<Vec<String>, AppError> {
     let allow_once = allow_once.unwrap_or(false);
     {
-        let conn = state
-            .db
-            .lock()
-            .map_err(|e| AppError::General(e.to_string()))?;
+        let conn = lock_db_or_recover(state.inner());
         permission_service::enforce_cached(
             &conn,
             &state,
@@ -296,21 +407,29 @@ pub fn move_files(
     }
 
     let dest_paths = file_service::move_files(&sources, &dest_dir)?;
-    let conn = state.db.lock().unwrap();
     let moves: Vec<(&str, &str)> = dest_paths
         .iter()
         .zip(sources.iter())
         .map(|(d, s)| (d.as_str(), s.as_str()))
         .collect();
     let meta = serde_json::json!({ "moves": moves });
-    undo_service::record_operation(
-        &conn,
-        OperationType::Move,
-        "move",
-        "move_inverse",
-        &sources,
-        Some(&meta.to_string()),
+
+    record_operation_or_rollback(
+        state.inner(),
+        "move_files",
+        |conn| {
+            undo_service::record_operation(
+                conn,
+                OperationType::Move,
+                "move",
+                "move_inverse",
+                &sources,
+                Some(&meta.to_string()),
+            )
+        },
+        || rollback_moved_paths(&sources, &dest_paths),
     )?;
+
     Ok(dest_paths)
 }
 
@@ -323,10 +442,7 @@ pub fn copy_files(
 ) -> Result<Vec<String>, AppError> {
     let allow_once = allow_once.unwrap_or(false);
     {
-        let conn = state
-            .db
-            .lock()
-            .map_err(|e| AppError::General(e.to_string()))?;
+        let conn = lock_db_or_recover(state.inner());
         permission_service::enforce_cached(
             &conn,
             &state,
@@ -346,16 +462,24 @@ pub fn copy_files(
     }
 
     let dest_paths = file_service::copy_files(&sources, &dest_dir)?;
-    let conn = state.db.lock().unwrap();
-    let meta = serde_json::json!({ "copied_paths": dest_paths });
-    undo_service::record_operation(
-        &conn,
-        OperationType::Copy,
-        "copy",
-        "remove_copies",
-        &sources,
-        Some(&meta.to_string()),
+    let meta = serde_json::json!({ "copied_paths": dest_paths.clone() });
+
+    record_operation_or_rollback(
+        state.inner(),
+        "copy_files",
+        |conn| {
+            undo_service::record_operation(
+                conn,
+                OperationType::Copy,
+                "copy",
+                "remove_copies",
+                &sources,
+                Some(&meta.to_string()),
+            )
+        },
+        || rollback_copied_paths(&dest_paths),
     )?;
+
     Ok(dest_paths)
 }
 
@@ -367,10 +491,7 @@ pub fn delete_files(
 ) -> Result<(), AppError> {
     let allow_once = allow_once.unwrap_or(false);
     {
-        let conn = state
-            .db
-            .lock()
-            .map_err(|e| AppError::General(e.to_string()))?;
+        let conn = lock_db_or_recover(state.inner());
         for path in &paths {
             permission_service::enforce_cached(
                 &conn,
@@ -383,7 +504,6 @@ pub fn delete_files(
     }
 
     let results = file_service::soft_delete(&paths)?;
-    let conn = state.db.lock().unwrap();
     let items: Vec<serde_json::Value> = results
         .iter()
         .map(|r| {
@@ -394,14 +514,23 @@ pub fn delete_files(
         })
         .collect();
     let meta = serde_json::json!({ "deleted_items": items });
-    undo_service::record_operation(
-        &conn,
-        OperationType::Delete,
-        "delete",
-        "restore",
-        &paths,
-        Some(&meta.to_string()),
+
+    record_operation_or_rollback(
+        state.inner(),
+        "delete_files",
+        |conn| {
+            undo_service::record_operation(
+                conn,
+                OperationType::Delete,
+                "delete",
+                "restore",
+                &paths,
+                Some(&meta.to_string()),
+            )
+        },
+        || rollback_deleted_paths(&results),
     )?;
+
     Ok(())
 }
 
@@ -409,16 +538,14 @@ pub fn delete_files(
 pub fn copy_files_with_progress(
     sources: Vec<String>,
     dest_dir: String,
+    operation_id: Option<String>,
     allow_once: Option<bool>,
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Vec<String>, AppError> {
     let allow_once = allow_once.unwrap_or(false);
     {
-        let conn = state
-            .db
-            .lock()
-            .map_err(|e| AppError::General(e.to_string()))?;
+        let conn = lock_db_or_recover(state.inner());
         permission_service::enforce_cached(
             &conn,
             &state,
@@ -437,29 +564,43 @@ pub fn copy_files_with_progress(
         }
     }
 
-    state.cancel_flag.store(false, Ordering::Relaxed);
-    let cancel = state.cancel_flag.clone();
+    let operation_id = operation_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let cancel = state.reset_file_operation_cancel_flag(&operation_id);
 
     let dest_paths = file_service::copy_files_with_progress(&sources, &dest_dir, &cancel, |evt| {
         let _ = app.emit("file-operation-progress", evt);
-    })?;
+    });
+    state.clear_file_operation_cancel_flag(&operation_id);
 
-    let conn = state.db.lock().unwrap();
-    let meta = serde_json::json!({ "copied_paths": dest_paths });
-    undo_service::record_operation(
-        &conn,
-        OperationType::Copy,
-        "copy",
-        "remove_copies",
-        &sources,
-        Some(&meta.to_string()),
+    let dest_paths = dest_paths?;
+
+    let meta = serde_json::json!({ "copied_paths": dest_paths.clone() });
+
+    record_operation_or_rollback(
+        state.inner(),
+        "copy_files_with_progress",
+        |conn| {
+            undo_service::record_operation(
+                conn,
+                OperationType::Copy,
+                "copy",
+                "remove_copies",
+                &sources,
+                Some(&meta.to_string()),
+            )
+        },
+        || rollback_copied_paths(&dest_paths),
     )?;
+
     Ok(dest_paths)
 }
 
 #[command]
-pub fn cancel_operation(state: State<'_, AppState>) {
-    state.cancel_flag.store(true, Ordering::Relaxed);
+pub fn cancel_operation(operation_id: Option<String>, state: State<'_, AppState>) {
+    state.mark_file_operation_cancelled(operation_id.as_deref());
+    if operation_id.is_none() {
+        state.cancel_flag.store(true, Ordering::Relaxed);
+    }
 }
 
 #[command]
@@ -487,6 +628,8 @@ pub fn find_large_files(
     allow_once: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<Vec<FileEntry>, AppError> {
+    validate_path(&directory)?;
+
     let allow_once = allow_once.unwrap_or(false);
     let conn = state
         .db
@@ -501,7 +644,7 @@ pub fn find_large_files(
     )?;
     let mut stmt = conn.prepare(
         "SELECT path, name, extension, mime_type, size_bytes, created_at, modified_at, is_directory, parent_path
-         FROM files WHERE parent_path LIKE ?1 || '%' AND is_directory = 0 AND size_bytes >= ?2
+         FROM files WHERE (parent_path = ?1 OR parent_path LIKE ?1 || '/%') AND is_directory = 0 AND size_bytes >= ?2
          ORDER BY size_bytes DESC LIMIT 100",
     )?;
     let entries = stmt
@@ -530,6 +673,8 @@ pub fn find_old_files(
     allow_once: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<Vec<FileEntry>, AppError> {
+    validate_path(&directory)?;
+
     let allow_once = allow_once.unwrap_or(false);
     let cutoff = chrono::Utc::now() - chrono::Duration::days(older_than_days);
     let cutoff_str = cutoff.to_rfc3339();
@@ -546,7 +691,7 @@ pub fn find_old_files(
     )?;
     let mut stmt = conn.prepare(
         "SELECT path, name, extension, mime_type, size_bytes, created_at, modified_at, is_directory, parent_path
-         FROM files WHERE parent_path LIKE ?1 || '%' AND is_directory = 0 AND modified_at < ?2
+         FROM files WHERE (parent_path = ?1 OR parent_path LIKE ?1 || '/%') AND is_directory = 0 AND modified_at < ?2
          ORDER BY modified_at ASC LIMIT 100",
     )?;
     let entries = stmt
@@ -574,54 +719,68 @@ pub fn find_duplicates(
     allow_once: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<Vec<Vec<FileEntry>>, AppError> {
-    let allow_once = allow_once.unwrap_or(false);
-    let conn = state
-        .db
-        .lock()
-        .map_err(|e| AppError::General(e.to_string()))?;
-    permission_service::enforce_cached(
-        &conn,
-        &state,
-        &directory,
-        PermissionCapability::ContentScan,
-        allow_once,
-    )?;
-    let mut stmt = conn.prepare(
-        "SELECT f.path, f.name, f.extension, f.mime_type, f.size_bytes, f.created_at, f.modified_at, f.is_directory, f.parent_path
-         FROM files f
-         INNER JOIN (
-           SELECT size_bytes FROM files
-           WHERE parent_path LIKE ?1 || '%' AND is_directory = 0 AND size_bytes > 0
-           GROUP BY size_bytes HAVING COUNT(*) > 1
-         ) dups ON f.size_bytes = dups.size_bytes
-         WHERE f.parent_path LIKE ?1 || '%' AND f.is_directory = 0
-         ORDER BY f.size_bytes DESC, f.name ASC",
-    )?;
-    let flat: Vec<FileEntry> = stmt
-        .query_map(rusqlite::params![directory], |row| {
-            Ok(FileEntry {
-                path: row.get(0)?,
-                name: row.get(1)?,
-                extension: row.get(2)?,
-                mime_type: row.get(3)?,
-                size_bytes: row.get(4)?,
-                created_at: row.get(5)?,
-                modified_at: row.get(6)?,
-                is_directory: row.get(7)?,
-                parent_path: row.get(8)?,
-            })
-        })?
-        .filter_map(|r| r.ok())
-        .collect();
+    validate_path(&directory)?;
 
-    let mut groups: std::collections::HashMap<i64, Vec<FileEntry>> =
+    let allow_once = allow_once.unwrap_or(false);
+    let flat: Vec<FileEntry> = {
+        let conn = lock_db_or_recover(state.inner());
+        permission_service::enforce_cached(
+            &conn,
+            &state,
+            &directory,
+            PermissionCapability::ContentScan,
+            allow_once,
+        )?;
+        let mut stmt = conn.prepare(
+            "SELECT f.path, f.name, f.extension, f.mime_type, f.size_bytes, f.created_at, f.modified_at, f.is_directory, f.parent_path
+             FROM files f
+             INNER JOIN (
+               SELECT size_bytes FROM files
+               WHERE (parent_path = ?1 OR parent_path LIKE ?1 || '/%') AND is_directory = 0 AND size_bytes > 0
+               GROUP BY size_bytes HAVING COUNT(*) > 1
+             ) dups ON f.size_bytes = dups.size_bytes
+             WHERE (f.parent_path = ?1 OR f.parent_path LIKE ?1 || '/%') AND f.is_directory = 0
+             ORDER BY f.size_bytes DESC, f.name ASC",
+        )?;
+        let results: Vec<FileEntry> = stmt
+            .query_map(rusqlite::params![directory], |row| {
+                Ok(FileEntry {
+                    path: row.get(0)?,
+                    name: row.get(1)?,
+                    extension: row.get(2)?,
+                    mime_type: row.get(3)?,
+                    size_bytes: row.get(4)?,
+                    created_at: row.get(5)?,
+                    modified_at: row.get(6)?,
+                    is_directory: row.get(7)?,
+                    parent_path: row.get(8)?,
+                })
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        results
+    };
+
+    let mut groups: std::collections::HashMap<(i64, String), Vec<FileEntry>> =
         std::collections::HashMap::new();
     for entry in flat {
-        if let Some(size) = entry.size_bytes {
-            groups.entry(size).or_default().push(entry);
+        let Some(size) = entry.size_bytes else {
+            continue;
+        };
+        let path = Path::new(&entry.path);
+        if !path.is_file() {
+            continue;
         }
+        let Ok(hash) = hash_file_sha256(path) else {
+            continue;
+        };
+        groups.entry((size, hash)).or_default().push(entry);
     }
-    let result: Vec<Vec<FileEntry>> = groups.into_values().filter(|g| g.len() > 1).collect();
+
+    let result: Vec<Vec<FileEntry>> = groups
+        .into_values()
+        .filter(|group| group.len() > 1)
+        .collect();
     Ok(result)
 }
 
@@ -638,6 +797,8 @@ pub fn detect_project_type(
     allow_once: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<Option<ProjectInfo>, AppError> {
+    validate_path(&directory)?;
+
     let allow_once = allow_once.unwrap_or(false);
     {
         let conn = state
@@ -665,7 +826,6 @@ pub fn detect_project_type(
         ("Gemfile", "ruby"),
         ("composer.json", "php"),
         ("Package.swift", "swift"),
-        (".csproj", "dotnet"),
     ];
     for (marker, project_type) in markers {
         if dir.join(marker).exists() {
@@ -676,6 +836,20 @@ pub fn detect_project_type(
             }));
         }
     }
+
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let file_name = entry.file_name().to_string_lossy().to_string();
+            if file_name.ends_with(".csproj") {
+                return Ok(Some(ProjectInfo {
+                    project_type: "dotnet".to_string(),
+                    marker_file: file_name,
+                    directory: directory.clone(),
+                }));
+            }
+        }
+    }
+
     Ok(None)
 }
 
@@ -687,10 +861,7 @@ pub fn open_file(
 ) -> Result<(), AppError> {
     let allow_once = allow_once.unwrap_or(false);
     {
-        let conn = state
-            .db
-            .lock()
-            .map_err(|e| AppError::General(e.to_string()))?;
+        let conn = lock_db_or_recover(state.inner());
         permission_service::enforce_cached(
             &conn,
             &state,
@@ -699,6 +870,8 @@ pub fn open_file(
             allow_once,
         )?;
     }
+
+    validate_path(&path)?;
 
     let p = Path::new(&path);
     if !p.exists() {
@@ -736,12 +909,11 @@ pub fn read_file_text(
     allow_once: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<String, AppError> {
+    validate_path(&path)?;
+
     let allow_once = allow_once.unwrap_or(false);
     {
-        let conn = state
-            .db
-            .lock()
-            .map_err(|e| AppError::General(e.to_string()))?;
+        let conn = lock_db_or_recover(state.inner());
         permission_service::enforce_cached(
             &conn,
             &state,
@@ -757,12 +929,7 @@ pub fn read_file_text(
     }
     let meta = fs::metadata(p)?;
     if meta.len() > MAX_PREVIEW_BYTES {
-        let mut buf = vec![0u8; MAX_PREVIEW_BYTES as usize];
-        use std::io::Read;
-        let mut f = fs::File::open(p)?;
-        f.read_exact(&mut buf)?;
-        return String::from_utf8(buf)
-            .map_err(|_| AppError::General("file is not valid UTF-8".to_string()));
+        return read_utf8_prefix(p, MAX_PREVIEW_BYTES as usize);
     }
     fs::read_to_string(p).map_err(|e| AppError::General(format!("failed to read file: {e}")))
 }
@@ -771,6 +938,7 @@ pub fn read_file_text(
 mod tests {
     use super::*;
     use crate::data::migrations;
+    use crate::data::repository;
     use std::fs::File;
 
     #[test]

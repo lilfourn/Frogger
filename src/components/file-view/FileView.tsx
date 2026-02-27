@@ -117,7 +117,9 @@ export function FileView() {
         {
           label: "Copy Path",
           action: () => {
-            navigator.clipboard.writeText(contextTarget.path).catch((err) => console.error("[FileView] Clipboard write failed:", err));
+            navigator.clipboard
+              .writeText(contextTarget.path)
+              .catch((err) => console.error("[FileView] Clipboard write failed:", err));
           },
         },
         { separator: true },

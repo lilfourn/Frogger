@@ -31,13 +31,10 @@ pub fn validate_path(path: &str) -> Result<(), AppError> {
 
     let p = Path::new(path);
     for component in p.components() {
-        if let Component::Normal(s) = component {
-            let s = s.to_string_lossy();
-            if s == ".." {
-                return Err(AppError::General(
-                    "path traversal (.. component) not allowed".to_string(),
-                ));
-            }
+        if matches!(component, Component::ParentDir) {
+            return Err(AppError::General(
+                "path traversal (.. component) not allowed".to_string(),
+            ));
         }
     }
 
@@ -105,6 +102,12 @@ mod tests {
         assert!(validate_path("/tmp/file | grep secret").is_err());
         assert!(validate_path("/tmp/`id`").is_err());
         assert!(validate_path("/tmp/file\n/etc/passwd").is_err());
+    }
+
+    #[test]
+    fn test_parent_dir_component_rejected() {
+        assert!(validate_path("/Users/test/../secrets.txt").is_err());
+        assert!(validate_path("../relative/path.txt").is_err());
     }
 
     #[test]

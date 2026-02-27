@@ -12,10 +12,22 @@ const VIEW_OPTIONS: { mode: ViewMode; label: string; Icon: typeof List }[] = [
 const BUTTON_SIZE = 28;
 
 function pathSegments(path: string): { name: string; path: string }[] {
-  const parts = path.replace(/\/+$/, "").split("/").filter(Boolean);
+  const normalized = path.replace(/\\/g, "/").replace(/\/+$/, "");
+  if (!normalized) return [];
+
+  const parts = normalized.split("/").filter(Boolean);
+  if (parts.length === 0) return [];
+
+  if (normalized.startsWith("/")) {
+    return parts.map((name, i) => ({
+      name,
+      path: "/" + parts.slice(0, i + 1).join("/"),
+    }));
+  }
+
   return parts.map((name, i) => ({
     name,
-    path: "/" + parts.slice(0, i + 1).join("/"),
+    path: parts.slice(0, i + 1).join("/"),
   }));
 }
 

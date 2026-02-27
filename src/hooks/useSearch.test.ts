@@ -107,6 +107,10 @@ describe("useSearch", () => {
       vi.advanceTimersByTime(150);
     });
 
+    await vi.waitFor(() => {
+      expect(useSearchStore.getState().isSearching).toBe(false);
+    });
+
     expect(useSearchStore.getState().results).toEqual([]);
     expect(useSearchStore.getState().isSearching).toBe(false);
   });

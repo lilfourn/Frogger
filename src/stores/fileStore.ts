@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { FileEntry } from "../types/file";
+import { normalizePath } from "../utils/paths";
 import { useSettingsStore } from "./settingsStore";
 
 const MAX_RECENTS = 20;
@@ -7,6 +8,20 @@ const MAX_RECENTS = 20;
 let tabIdCounter = 1;
 function nextTabId(): string {
   return `tab-${tabIdCounter++}`;
+}
+
+function parentPath(path: string): string {
+  const normalized = normalizePath(path);
+  if (!normalized || normalized === "/") {
+    return "/";
+  }
+
+  const separatorIndex = normalized.lastIndexOf("/");
+  if (separatorIndex <= 0) {
+    return "/";
+  }
+
+  return normalized.slice(0, separatorIndex);
 }
 
 export type SortField = "name" | "size" | "date" | "kind";
@@ -69,7 +84,7 @@ export const useFileStore = create<FileState>()((set, get) => ({
 
   goUp: () => {
     const { currentPath, navigateTo } = get();
-    const parent = currentPath.replace(/\/[^/]+\/?$/, "") || "/";
+    const parent = parentPath(currentPath);
     if (parent !== currentPath) navigateTo(parent);
   },
 

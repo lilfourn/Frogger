@@ -2,7 +2,7 @@ use crate::error::AppError;
 use crate::shell::safety::{validate_not_protected, validate_path};
 use serde::Serialize;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -37,6 +37,9 @@ fn move_path_with_fallback(src: &Path, dest: &Path) -> Result<(), AppError> {
             }
             Ok(())
         }
+        Err(e) if e.kind() == ErrorKind::NotFound && !src.exists() => Err(AppError::General(
+            format!("source does not exist: {}", src.to_string_lossy()),
+        )),
         Err(e) => Err(AppError::Io(e)),
     }
 }
@@ -83,6 +86,9 @@ pub fn move_files(sources: &[String], dest_dir: &str) -> Result<Vec<String>, App
         validate_path(src)?;
         validate_not_protected(src)?;
         let src_path = Path::new(src);
+        if !src_path.exists() {
+            return Err(AppError::General(format!("source does not exist: {src}")));
+        }
         let file_name = src_path
             .file_name()
             .ok_or_else(|| AppError::General(format!("invalid source path: {src}")))?;
@@ -106,6 +112,9 @@ pub fn copy_files(sources: &[String], dest_dir: &str) -> Result<Vec<String>, App
     for src in sources {
         validate_path(src)?;
         let src_path = Path::new(src);
+        if !src_path.exists() {
+            return Err(AppError::General(format!("source does not exist: {src}")));
+        }
         let file_name = src_path
             .file_name()
             .ok_or_else(|| AppError::General(format!("invalid source path: {src}")))?;
@@ -114,7 +123,13 @@ pub fn copy_files(sources: &[String], dest_dir: &str) -> Result<Vec<String>, App
         if src_path.is_dir() {
             copy_dir_recursive(src_path, &dest)?;
         } else {
-            fs::copy(src_path, &dest)?;
+            fs::copy(src_path, &dest).map_err(|err| {
+                if err.kind() == ErrorKind::NotFound && !src_path.exists() {
+                    AppError::General(format!("source does not exist: {src}"))
+                } else {
+                    AppError::Io(err)
+                }
+            })?;
         }
         dest_paths.push(dest.to_string_lossy().to_string());
     }
@@ -457,6 +472,23 @@ mod tests {
     }
 
     #[test]
+    fn test_move_files_missing_source_returns_clear_error() {
+        let base = temp_dir("move_missing_source");
+        let missing = base.join("missing.txt");
+        let dest_dir = base.join("target");
+        fs::create_dir_all(&dest_dir).unwrap();
+        let missing_str = missing.to_string_lossy().to_string();
+
+        let err = move_files(&[missing_str.clone()], &dest_dir.to_string_lossy()).unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            format!("source does not exist: {missing_str}")
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
     fn test_copy_files() {
         let base = temp_dir("copy");
         let src = base.join("file.txt");
@@ -473,6 +505,23 @@ mod tests {
         assert!(src.exists());
         assert!(Path::new(&results[0]).exists());
         assert_eq!(fs::read_to_string(&results[0]).unwrap(), "data");
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn test_copy_files_missing_source_returns_clear_error() {
+        let base = temp_dir("copy_missing_source");
+        let missing = base.join("missing.txt");
+        let dest_dir = base.join("target");
+        fs::create_dir_all(&dest_dir).unwrap();
+        let missing_str = missing.to_string_lossy().to_string();
+
+        let err = copy_files(&[missing_str.clone()], &dest_dir.to_string_lossy()).unwrap_err();
+
+        assert_eq!(
+            err.to_string(),
+            format!("source does not exist: {missing_str}")
+        );
         let _ = fs::remove_dir_all(&base);
     }
 

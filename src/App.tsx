@@ -30,6 +30,7 @@ const PERMISSION_SCOPE_NORMALIZATION_ATTEMPTS_KEY = "permission_scope_normalizat
 const PERMISSION_SCOPE_NORMALIZATION_NEXT_RUN_AT_KEY =
   "permission_scope_normalization_next_run_at_v1";
 const PERMISSION_SCOPE_NORMALIZATION_MAX_BACKOFF_MS = 4 * 60 * 60 * 1000;
+const PERMISSION_SCOPE_NORMALIZATION_START_DELAY_MS = 2000;
 const INDEXING_START_RETRY_DELAYS_MS = [0, 1000, 2500];
 
 function computeNormalizationBackoffMs(attempt: number): number {
@@ -236,19 +237,26 @@ function App() {
       }
     };
 
-    schedulePermissionScopeNormalization().catch((err) =>
-      console.error("[App] Permission normalization failed:", err),
-    );
+    const normalizationTimer = window.setTimeout(() => {
+      if (cancelled) return;
+      schedulePermissionScopeNormalization().catch((err) =>
+        console.error("[App] Permission normalization failed:", err),
+      );
+    }, PERMISSION_SCOPE_NORMALIZATION_START_DELAY_MS);
     checkOnboarding().catch((err) => console.error("[App] Onboarding check failed:", err));
 
     return () => {
       cancelled = true;
+      window.clearTimeout(normalizationTimer);
     };
   }, [checkOnboarding]);
 
   useEffect(() => {
     if (!currentPath) return;
     let cancelled = false;
+    void invoke("notify_user_interaction").catch((err) =>
+      console.debug("[App] Failed to notify user interaction:", err),
+    );
     setLoading(true);
     console.debug("[App] Listing directory:", currentPath);
     listDirectory(currentPath)

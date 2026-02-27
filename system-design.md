@@ -51,14 +51,14 @@ Frogger follows Tauri v2's **multi-process architecture** with strict separation
 
 ### Layer Responsibilities
 
-| Layer | Responsibility |
-|---|---|
-| **Frontend (WebView)** | UI rendering, user interaction, state management, animations |
-| **Tauri IPC** | Type-safe command invocation and event broadcasting between processes |
-| **Command Handlers** | Thin routing layer — validates input, delegates to services |
-| **Service Layer** | All business logic — file ops, AI orchestration, search, OCR |
-| **Data Layer** | Persistence (SQLite), secrets (keychain), OS integration (shell, fs watcher) |
-| **External** | Anthropic Claude API over HTTPS |
+| Layer                  | Responsibility                                                               |
+| ---------------------- | ---------------------------------------------------------------------------- |
+| **Frontend (WebView)** | UI rendering, user interaction, state management, animations                 |
+| **Tauri IPC**          | Type-safe command invocation and event broadcasting between processes        |
+| **Command Handlers**   | Thin routing layer — validates input, delegates to services                  |
+| **Service Layer**      | All business logic — file ops, AI orchestration, search, OCR                 |
+| **Data Layer**         | Persistence (SQLite), secrets (keychain), OS integration (shell, fs watcher) |
+| **External**           | Anthropic Claude API over HTTPS                                              |
 
 ---
 
@@ -105,17 +105,14 @@ async fn move_files(
 
 ```typescript
 // src/services/fileService.ts
-import { invoke } from '@tauri-apps/api/core';
+import { invoke } from "@tauri-apps/api/core";
 
 export async function listDirectory(path: string): Promise<FileEntry[]> {
-  return invoke<FileEntry[]>('list_directory', { path });
+  return invoke<FileEntry[]>("list_directory", { path });
 }
 
-export async function moveFiles(
-  sources: string[],
-  destination: string
-): Promise<OperationResult> {
-  return invoke<OperationResult>('move_files', { sources, destination });
+export async function moveFiles(sources: string[], destination: string): Promise<OperationResult> {
+  return invoke<OperationResult>("move_files", { sources, destination });
 }
 ```
 
@@ -140,13 +137,13 @@ app_handle.emit("fs-change", FsChangeEvent {
 
 ```typescript
 // Frontend: Listen for events
-import { listen } from '@tauri-apps/api/event';
+import { listen } from "@tauri-apps/api/event";
 
-listen<IndexProgress>('indexing-progress', (event) => {
+listen<IndexProgress>("indexing-progress", (event) => {
   setProgress(event.payload);
 });
 
-listen<FsChangeEvent>('fs-change', (event) => {
+listen<FsChangeEvent>("fs-change", (event) => {
   refreshDirectory(event.payload.path);
 });
 ```
@@ -207,9 +204,9 @@ interface FileStore {
   currentPath: string;
   entries: FileEntry[];
   selectedFiles: Set<string>;
-  viewMode: 'grid' | 'list' | 'column' | 'gallery';
+  viewMode: "grid" | "list" | "column" | "gallery";
   sortBy: SortField;
-  sortDirection: 'asc' | 'desc';
+  sortDirection: "asc" | "desc";
 
   // Actions
   navigateTo: (path: string) => Promise<void>;
@@ -221,7 +218,7 @@ interface FileStore {
 interface ChatStore {
   messages: ChatMessage[];
   isStreaming: boolean;
-  approvalMode: 'suggest' | 'auto';
+  approvalMode: "suggest" | "auto";
   pendingOperations: ProposedOperation[] | null;
 
   // Actions
@@ -252,9 +249,9 @@ When the user sends a message, the frontend assembles a context object:
 ```typescript
 interface ChatContext {
   currentDirectory: string;
-  selectedFiles: FileEntry[];      // Currently selected files
-  visibleFiles: FileEntry[];       // Files in current view
-  navigationHistory: string[];     // Recent directories visited
+  selectedFiles: FileEntry[]; // Currently selected files
+  visibleFiles: FileEntry[]; // Files in current view
+  navigationHistory: string[]; // Recent directories visited
   previousMessages: ChatMessage[]; // Conversation history
 }
 ```
@@ -434,14 +431,14 @@ pub struct ShellCommand {
 
 ### Safety Rails
 
-| Rail | Description |
-|---|---|
-| **Destructive confirmation** | Any `rm`, `del`, or overwrite prompts for confirmation |
-| **Path validation** | Commands are validated to ensure they only touch allowed directories |
-| **No root operations** | Commands targeting `/`, `C:\`, or system directories are blocked |
-| **Command sanitization** | Input is escaped to prevent shell injection |
-| **Timeout** | Commands have a configurable timeout (default 30s) |
-| **Dry-run mode** | `--dry-run` or `-WhatIf` flags for preview when available |
+| Rail                         | Description                                                          |
+| ---------------------------- | -------------------------------------------------------------------- |
+| **Destructive confirmation** | Any `rm`, `del`, or overwrite prompts for confirmation               |
+| **Path validation**          | Commands are validated to ensure they only touch allowed directories |
+| **No root operations**       | Commands targeting `/`, `C:\`, or system directories are blocked     |
+| **Command sanitization**     | Input is escaped to prevent shell injection                          |
+| **Timeout**                  | Commands have a configurable timeout (default 30s)                   |
+| **Dry-run mode**             | `--dry-run` or `-WhatIf` flags for preview when available            |
 
 ---
 
@@ -490,36 +487,42 @@ File System Watcher (notify crate)
 └───────────────────┘
 ```
 
-### Hybrid Search (Keyword + Semantic)
+### Keyword-First Search (Semantic Fallback)
 
 ```rust
 pub async fn search(query: &str, options: SearchOptions) -> Vec<SearchResult> {
-    // 1. FTS5 keyword search
+    // 1. Exact/prefix/contains keyword search over file/folder names and paths
     let keyword_results = db.query(
-        "SELECT id, path, rank FROM files_fts WHERE files_fts MATCH ?",
-        [query]
+        "SELECT path, is_directory FROM files
+         WHERE name = ? OR path = ? OR name LIKE ? OR path LIKE ? OR name LIKE ? OR path LIKE ?
+         ORDER BY exact_match_first, prefix_match_second, is_directory DESC, length(path) ASC",
+        [query, query, format!("{}%", query), format!("{}%", query), format!("%{}%", query), format!("%{}%", query)]
     );
 
-    // 2. Generate query embedding
-    let query_embedding = embedding_service.embed(query).await?;
+    // 2. Return immediately when keyword hits exist
+    if !keyword_results.is_empty() {
+        return keyword_results;
+    }
 
-    // 3. Vector similarity search
+    // 3. Guard semantic fallback for very short queries
+    if query.chars().count() < 2 {
+        return vec![];
+    }
+
+    // 4. Semantic vector search fallback
+    let query_embedding = embedding_service.embed(query).await?;
     let vector_results = db.query(
         "SELECT file_id, distance FROM vec_index
-         WHERE embedding MATCH ? ORDER BY distance LIMIT 50",
+         WHERE embedding MATCH ? ORDER BY distance LIMIT 20",
         [query_embedding]
     );
 
-    // 4. Reciprocal Rank Fusion (RRF)
-    let fused = reciprocal_rank_fusion(keyword_results, vector_results, k=60);
-
-    // 5. Optional: Claude re-ranking for ambiguous queries
+    // 5. Optional: Claude re-ranking for ambiguous deep-search mode
     if options.deep_search {
-        let reranked = ai_service.rerank(query, &fused).await?;
-        return reranked;
+        return ai_service.rerank(query, &vector_results).await?;
     }
 
-    fused
+    vector_results
 }
 ```
 
@@ -576,13 +579,13 @@ Directory Navigated
 
 ### Threat Model
 
-| Threat | Mitigation |
-|---|---|
-| API key theft | Stored in OS keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service) |
-| Shell injection | All shell commands use parameterized execution, not string concatenation |
-| Unauthorized file access | Tauri's scoped FS permissions + Frogger's permission_scopes table |
-| Data exfiltration via Claude | Permission filter strips disallowed paths before API calls; full audit log |
-| Malicious AI output | All AI-generated commands require approval in suggest mode; destructive ops always confirmed |
+| Threat                       | Mitigation                                                                                   |
+| ---------------------------- | -------------------------------------------------------------------------------------------- |
+| API key theft                | Stored in OS keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service)     |
+| Shell injection              | All shell commands use parameterized execution, not string concatenation                     |
+| Unauthorized file access     | Tauri's scoped FS permissions + Frogger's permission_scopes table                            |
+| Data exfiltration via Claude | Permission filter strips disallowed paths before API calls; full audit log                   |
+| Malicious AI output          | All AI-generated commands require approval in suggest mode; destructive ops always confirmed |
 
 ### Tauri Capabilities Configuration
 
@@ -610,10 +613,7 @@ Directory Navigated
         { "path": "$DOWNLOAD/**" },
         { "path": "$DESKTOP/**" }
       ],
-      "deny": [
-        { "path": "$HOME/.ssh/**" },
-        { "path": "$HOME/.gnupg/**" }
-      ]
+      "deny": [{ "path": "$HOME/.ssh/**" }, { "path": "$HOME/.gnupg/**" }]
     }
   ]
 }
@@ -623,26 +623,26 @@ Directory Navigated
 
 ## 10. Cross-Platform Abstractions
 
-| Concern | macOS | Windows | Linux |
-|---|---|---|---|
-| Shell | `/bin/zsh` or `/bin/bash` | `powershell.exe` | `/bin/bash` |
-| Keychain | macOS Keychain | Windows Credential Manager | `secret-service` (D-Bus) |
-| Trash | `~/.Trash` | Recycle Bin (via shell) | `freedesktop.org` trash spec |
-| File Watcher | FSEvents via `notify` | ReadDirectoryChangesW | inotify |
-| Native theme | `NSAppearance` | Windows accent color | GTK/system theme |
-| Shortcuts | `Cmd+` prefix | `Ctrl+` prefix | `Ctrl+` prefix |
+| Concern      | macOS                     | Windows                    | Linux                        |
+| ------------ | ------------------------- | -------------------------- | ---------------------------- |
+| Shell        | `/bin/zsh` or `/bin/bash` | `powershell.exe`           | `/bin/bash`                  |
+| Keychain     | macOS Keychain            | Windows Credential Manager | `secret-service` (D-Bus)     |
+| Trash        | `~/.Trash`                | Recycle Bin (via shell)    | `freedesktop.org` trash spec |
+| File Watcher | FSEvents via `notify`     | ReadDirectoryChangesW      | inotify                      |
+| Native theme | `NSAppearance`            | Windows accent color       | GTK/system theme             |
+| Shortcuts    | `Cmd+` prefix             | `Ctrl+` prefix             | `Ctrl+` prefix               |
 
 ---
 
 ## 11. Performance Targets
 
-| Metric | Target |
-|---|---|
-| App cold start | < 1.5 seconds |
-| Directory listing (1,000 files) | < 200ms |
-| Directory listing (10,000 files) | < 800ms (virtualized rendering) |
-| Search query (local index) | < 100ms |
-| Embedding generation (single file) | < 50ms |
-| OCR (single page image) | < 2 seconds |
-| Memory usage (idle) | < 120MB |
-| Bundle size | < 15MB |
+| Metric                             | Target                          |
+| ---------------------------------- | ------------------------------- |
+| App cold start                     | < 1.5 seconds                   |
+| Directory listing (1,000 files)    | < 200ms                         |
+| Directory listing (10,000 files)   | < 800ms (virtualized rendering) |
+| Search query (local index)         | < 100ms                         |
+| Embedding generation (single file) | < 50ms                          |
+| OCR (single page image)            | < 2 seconds                     |
+| Memory usage (idle)                | < 120MB                         |
+| Bundle size                        | < 15MB                          |

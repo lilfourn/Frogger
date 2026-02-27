@@ -9,15 +9,21 @@ export function useTauriEvent<T>(eventName: string, handler: (payload: T) => voi
   });
 
   useEffect(() => {
+    let disposed = false;
     let unlisten: (() => void) | undefined;
 
     listen<T>(eventName, (event) => {
       handlerRef.current(event.payload);
     }).then((fn) => {
+      if (disposed) {
+        fn();
+        return;
+      }
       unlisten = fn;
     });
 
     return () => {
+      disposed = true;
       unlisten?.();
     };
   }, [eventName]);

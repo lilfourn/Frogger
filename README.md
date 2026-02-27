@@ -36,20 +36,23 @@ A file manager that actually understands your files. Frogger combines a fast nat
 ## Features
 
 **Core File Management**
+
 - Four view modes: List, Grid, Column (Miller), Gallery
 - Tabbed browsing with drag-and-drop between tabs
 - Full undo/redo for all file operations (create, rename, move, copy, delete)
 - Quick Look previews — images, code, markdown, PDF, video via `Space`
 - Soft delete with dedicated trash and restore
 
-**AI Intelligence** *(Phase 2–3, in progress)*
-- Hybrid search: keyword (FTS5) + semantic (vector embeddings) with RRF fusion
+**AI Intelligence** _(Phase 2–3, in progress)_
+
+- Keyword-first search: exact filename/folder/path matches first, semantic fallback (vector embeddings) when keyword matches are empty
 - OCR text extraction from images
 - Claude-powered file operations in suggest or auto-execute mode
-- Natural language commands: *"Move all PDFs to Documents"*
+- Natural language commands: _"Move all PDFs to Documents"_
 - Privacy-first: API key in OS keychain, per-directory permission scopes, full audit log
 
 **Performance**
+
 - Virtualized rendering for 10K+ file directories
 - Rust backend for all filesystem operations
 - SQLite with WAL mode for durable, fast data access
@@ -57,14 +60,14 @@ A file manager that actually understands your files. Frogger combines a fast nat
 
 ## Tech Stack
 
-| Layer | Technology |
-|---|---|
-| Desktop Runtime | Tauri v2 |
-| Frontend | React 19, TypeScript, Tailwind CSS 4 |
-| State | Zustand |
-| Backend | Rust, SQLite (rusqlite), sqlite-vec |
-| AI | Claude API (streaming), fastembed, Tesseract OCR |
-| Testing | Vitest, Playwright, cargo test |
+| Layer           | Technology                                       |
+| --------------- | ------------------------------------------------ |
+| Desktop Runtime | Tauri v2                                         |
+| Frontend        | React 19, TypeScript, Tailwind CSS 4             |
+| State           | Zustand                                          |
+| Backend         | Rust, SQLite (rusqlite), sqlite-vec              |
+| AI              | Claude API (streaming), fastembed, Tesseract OCR |
+| Testing         | Vitest, Playwright, cargo test                   |
 
 ## Quick Start
 

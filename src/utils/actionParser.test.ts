@@ -141,6 +141,45 @@ describe("parseOrganizePlan", () => {
     expect(plan).not.toBeNull();
     expect(plan!.categories[0].folder).toBe("other");
   });
+
+  it("parses v2 plan with placements and optional stats", () => {
+    const input = `\`\`\`json
+{"placements":[{"path":"a.eml","folder":"documents","subfolder":"email","packing_path":"mail_2025_01_mail_s01","confidence":0.9,"source":"deterministic"}],"stats":{"total_files":1,"indexed_files":1,"skipped_hidden":0,"skipped_already_organized":0,"chunks":1,"other_ratio":0,"packed_directories":1,"folders_over_target":0,"avg_depth_generated":2.5}}
+\`\`\``;
+    const plan = parseOrganizePlan(input);
+    expect(plan).not.toBeNull();
+    expect(plan!.categories).toEqual([]);
+    expect(plan!.placements).toHaveLength(1);
+    expect(plan!.placements![0].subfolder).toBe("email");
+    expect(plan!.placements![0].packing_path).toBe("mail_2025_01_mail_s01");
+    expect(plan!.stats?.other_ratio).toBe(0);
+    expect(plan!.stats?.packed_directories).toBe(1);
+    expect(plan!.stats?.folders_over_target).toBe(0);
+    expect(plan!.stats?.avg_depth_generated).toBe(2.5);
+  });
+
+  it("parses plan with suggested_name in placements", () => {
+    const input = `\`\`\`json
+{"placements":[{"path":"IMG_001.jpg","folder":"vacation_photos","suggested_name":"beach_sunset.jpg","confidence":0.9,"source":"llm"}]}
+\`\`\``;
+    const plan = parseOrganizePlan(input);
+    expect(plan).not.toBeNull();
+    expect(plan!.placements).toHaveLength(1);
+    expect(plan!.placements![0].folder).toBe("vacation_photos");
+    expect(plan!.placements![0].suggested_name).toBe("beach_sunset.jpg");
+  });
+
+  it("parses plan with freeform folder names", () => {
+    const input = `\`\`\`json
+{"placements":[{"path":"invoice.pdf","folder":"tax_returns","subfolder":"2024"},{"path":"beach.jpg","folder":"vacation_photos_2024"}]}
+\`\`\``;
+    const plan = parseOrganizePlan(input);
+    expect(plan).not.toBeNull();
+    expect(plan!.placements).toHaveLength(2);
+    expect(plan!.placements![0].folder).toBe("tax_returns");
+    expect(plan!.placements![0].subfolder).toBe("2024");
+    expect(plan!.placements![1].folder).toBe("vacation_photos_2024");
+  });
 });
 
 describe("getActionFilePaths", () => {

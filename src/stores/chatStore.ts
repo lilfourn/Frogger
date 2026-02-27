@@ -27,6 +27,7 @@ export interface OrganizeProgress {
   percent: number;
   combinedPercent: number;
   message: string;
+  sequence: number;
 }
 
 export interface OrganizeState {
@@ -50,6 +51,59 @@ const INITIAL_ORGANIZE: OrganizeState = {
   error: "",
   progress: null,
 };
+
+const TERMINAL_PROGRESS_PHASES: ReadonlySet<OrganizeProgressPhase> = new Set([
+  "done",
+  "cancelled",
+  "error",
+]);
+
+function clampToNonNegativeInt(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.round(value));
+}
+
+function clampPercent(value: number): number {
+  return Math.min(100, clampToNonNegativeInt(value));
+}
+
+function normalizeOrganizeProgress(progress: OrganizeProgress): OrganizeProgress {
+  const processed = clampToNonNegativeInt(progress.processed);
+  const total = clampToNonNegativeInt(progress.total);
+  const phasePercent = total > 0 ? clampPercent(progress.percent) : 0;
+
+  return {
+    ...progress,
+    processed,
+    total,
+    percent: phasePercent,
+    combinedPercent: clampPercent(progress.combinedPercent),
+    sequence: clampToNonNegativeInt(progress.sequence),
+  };
+}
+
+function mergeOrganizeProgress(
+  current: OrganizeProgress | null,
+  incoming: OrganizeProgress,
+): OrganizeProgress {
+  const next = normalizeOrganizeProgress(incoming);
+  if (!current || current.sessionId !== next.sessionId) {
+    return next;
+  }
+
+  if (next.sequence < current.sequence) {
+    return current;
+  }
+
+  if (TERMINAL_PROGRESS_PHASES.has(current.phase) && next.phase !== current.phase) {
+    return current;
+  }
+
+  return {
+    ...next,
+    combinedPercent: Math.max(current.combinedPercent, next.combinedPercent),
+  };
+}
 
 interface ChatState {
   messages: ChatMessage[];
@@ -102,7 +156,13 @@ export const useChatStore = create<ChatState>()((set, get) => ({
   setApprovalMode: (approvalMode) => set({ approvalMode }),
   setPendingInput: (pendingInput) => set({ pendingInput }),
   setOrganize: (update) => set((s) => ({ organize: { ...s.organize, ...update } })),
-  setOrganizeProgress: (progress) => set((s) => ({ organize: { ...s.organize, progress } })),
+  setOrganizeProgress: (progress) =>
+    set((s) => ({
+      organize: {
+        ...s.organize,
+        progress: mergeOrganizeProgress(s.organize.progress, progress),
+      },
+    })),
   clearOrganizeProgress: () => set((s) => ({ organize: { ...s.organize, progress: null } })),
   resetOrganize: () => set({ organize: { ...INITIAL_ORGANIZE } }),
   open: () => set({ isOpen: true }),

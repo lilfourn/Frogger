@@ -7,6 +7,25 @@ use crate::models::file_entry::FileEntry;
 use crate::models::operation::{OperationRecord, OperationType};
 use crate::models::search::{FtsResult, OcrRecord, VecResult};
 
+#[derive(Debug, Clone)]
+pub struct EmbeddingCandidate {
+    pub file_path: String,
+    pub file_name: String,
+    pub extension: Option<String>,
+    pub ocr_text: Option<String>,
+}
+
+fn log_row_err<T>(result: rusqlite::Result<T>) -> Option<T> {
+    result
+        .map_err(|e| {
+            sentry::capture_message(
+                &format!("SQLite row deserialization error: {e}"),
+                sentry::Level::Debug,
+            );
+        })
+        .ok()
+}
+
 pub fn insert_file(conn: &Connection, entry: &FileEntry) -> Result<i64, AppError> {
     conn.execute(
         "INSERT OR REPLACE INTO files (path, name, extension, mime_type, size_bytes, created_at, modified_at, is_directory, parent_path)
@@ -47,7 +66,7 @@ pub fn list_by_parent(conn: &Connection, parent_path: &str) -> Result<Vec<FileEn
                 parent_path: row.get(8)?,
             })
         })?
-        .filter_map(|r| r.ok())
+        .filter_map(log_row_err)
         .collect();
 
     Ok(entries)
@@ -262,7 +281,7 @@ pub fn search_fts(
                 file_path: row.get(0)?,
             })
         })?
-        .filter_map(|r| r.ok())
+        .filter_map(log_row_err)
         .collect();
     Ok(results)
 }
@@ -323,7 +342,7 @@ pub fn search_file_paths_by_name_or_path(
                 file_path: row.get(0)?,
             })
         })?
-        .filter_map(|r| r.ok())
+        .filter_map(log_row_err)
         .collect();
 
     Ok(results)
@@ -341,6 +360,8 @@ pub fn insert_vec(conn: &Connection, file_path: &str, embedding: &[f32]) -> Resu
         "INSERT OR REPLACE INTO vec_index(file_path, embedding) VALUES (?1, ?2)",
         params![file_path, bytes],
     )?;
+    let now = chrono::Utc::now().to_rfc3339();
+    upsert_vec_embedding_meta(conn, file_path, &now)?;
     Ok(())
 }
 
@@ -359,9 +380,130 @@ pub fn search_vec(
                 distance: row.get(1)?,
             })
         })?
-        .filter_map(|r| r.ok())
+        .filter_map(log_row_err)
         .collect();
     Ok(results)
+}
+
+pub fn upsert_vec_embedding_meta(
+    conn: &Connection,
+    file_path: &str,
+    timestamp: &str,
+) -> Result<(), AppError> {
+    conn.execute(
+        "INSERT INTO vec_embedding_meta (file_path, embedded_at, updated_at)
+         VALUES (?1, ?2, ?2)
+         ON CONFLICT(file_path) DO UPDATE SET
+           embedded_at = excluded.embedded_at,
+           updated_at = excluded.updated_at",
+        params![file_path, timestamp],
+    )?;
+    Ok(())
+}
+
+pub fn delete_vec_embedding_meta(conn: &Connection, file_path: &str) -> Result<usize, AppError> {
+    let count = conn.execute(
+        "DELETE FROM vec_embedding_meta WHERE file_path = ?1",
+        params![file_path],
+    )?;
+    Ok(count)
+}
+
+pub fn vec_embedding_is_missing_or_expired(
+    conn: &Connection,
+    file_path: &str,
+    retention_days: i64,
+) -> Result<bool, AppError> {
+    if retention_days < 0 {
+        return Ok(true);
+    }
+
+    let modifier = format!("-{retention_days} days");
+    let is_missing_or_expired = conn.query_row(
+        "SELECT CASE
+             WHEN v.file_path IS NULL THEN 1
+             WHEN m.file_path IS NULL THEN 1
+             WHEN datetime(m.embedded_at) < datetime('now', ?2) THEN 1
+             ELSE 0
+         END
+         FROM files f
+         LEFT JOIN vec_index v ON v.file_path = f.path
+         LEFT JOIN vec_embedding_meta m ON m.file_path = f.path
+         WHERE f.path = ?1 AND f.is_directory = 0",
+        params![file_path, modifier],
+        |row| row.get::<_, i64>(0),
+    );
+
+    match is_missing_or_expired.optional()? {
+        Some(value) => Ok(value != 0),
+        None => Ok(false),
+    }
+}
+
+pub fn list_files_missing_or_expired_vec(
+    conn: &Connection,
+    retention_days: i64,
+    limit: usize,
+) -> Result<Vec<String>, AppError> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+
+    let modifier = format!("-{} days", retention_days.max(0));
+    let mut stmt = conn.prepare(
+        "SELECT f.path
+         FROM files f
+         LEFT JOIN vec_index v ON v.file_path = f.path
+         LEFT JOIN vec_embedding_meta m ON m.file_path = f.path
+         WHERE f.is_directory = 0
+           AND (
+             v.file_path IS NULL
+             OR m.file_path IS NULL
+             OR datetime(m.embedded_at) < datetime('now', ?1)
+           )
+         ORDER BY
+           CASE
+             WHEN v.file_path IS NULL THEN 0
+             WHEN m.file_path IS NULL THEN 1
+             ELSE 2
+           END,
+           datetime(f.modified_at) DESC,
+           f.path ASC
+         LIMIT ?2",
+    )?;
+
+    let rows = stmt
+        .query_map(params![modifier, limit as i64], |row| {
+            row.get::<_, String>(0)
+        })?
+        .filter_map(log_row_err)
+        .collect();
+
+    Ok(rows)
+}
+
+pub fn list_embedding_candidates(conn: &Connection) -> Result<Vec<EmbeddingCandidate>, AppError> {
+    let mut stmt = conn.prepare(
+        "SELECT f.path, f.name, f.extension, o.text_content
+         FROM files f
+         LEFT JOIN ocr_text o ON o.file_path = f.path
+         WHERE f.is_directory = 0
+         ORDER BY datetime(f.modified_at) DESC, f.path ASC",
+    )?;
+
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(EmbeddingCandidate {
+                file_path: row.get(0)?,
+                file_name: row.get(1)?,
+                extension: row.get(2)?,
+                ocr_text: row.get(3)?,
+            })
+        })?
+        .filter_map(log_row_err)
+        .collect();
+
+    Ok(rows)
 }
 
 // --- Incremental indexing ---
@@ -418,7 +560,7 @@ pub fn get_chat_messages(conn: &Connection, session_id: &str) -> Result<Vec<Chat
                 created_at: row.get(4)?,
             })
         })?
-        .filter_map(|r| r.ok())
+        .filter_map(log_row_err)
         .collect();
     Ok(records)
 }
@@ -461,7 +603,7 @@ pub fn get_permission_scopes(conn: &Connection) -> Result<Vec<PermissionScope>, 
                 created_at: row.get(6)?,
             })
         })?
-        .filter_map(|r| r.ok())
+        .filter_map(log_row_err)
         .collect();
     Ok(rows)
 }
@@ -507,7 +649,13 @@ pub fn upsert_permission_scope(
             indexing_mode,
         ],
     )?;
-    Ok(conn.last_insert_rowid())
+
+    conn.query_row(
+        "SELECT id FROM permission_scopes WHERE directory_path = ?1",
+        params![directory_path],
+        |row| row.get(0),
+    )
+    .map_err(AppError::from)
 }
 
 pub fn delete_permission_scope(conn: &Connection, id: i64) -> Result<usize, AppError> {
@@ -713,53 +861,6 @@ pub fn normalize_permission_scopes(
     }
 }
 
-#[allow(dead_code)]
-pub fn check_permission(conn: &Connection, path: &str, field: &str) -> Result<bool, AppError> {
-    let mode_col = match field {
-        "content_scan" => "content_scan_mode",
-        "modification" => "modification_mode",
-        "ocr" => "ocr_mode",
-        "indexing" => "indexing_mode",
-        _ => return Ok(true),
-    };
-
-    fn normalize(p: &str) -> String {
-        let mut out = p.replace('\\', "/");
-        while out.ends_with('/') && out.len() > 1 {
-            out.pop();
-        }
-        out
-    }
-
-    fn matches(path: &str, scope: &str) -> bool {
-        let path = normalize(path);
-        let scope = normalize(scope);
-        if scope == "/" {
-            return path.starts_with('/');
-        }
-        path == scope || path.starts_with(&(scope + "/"))
-    }
-
-    let query = format!(
-        "SELECT directory_path, {mode_col}
-         FROM permission_scopes
-         ORDER BY length(directory_path) DESC, directory_path ASC"
-    );
-    let mut stmt = conn.prepare(&query)?;
-    let rows = stmt.query_map([], |row| {
-        let scope_path: String = row.get(0)?;
-        let mode: String = row.get(1)?;
-        Ok((scope_path, mode))
-    })?;
-    for row in rows {
-        let (scope_path, mode) = row?;
-        if matches(path, &scope_path) {
-            return Ok(mode == "allow");
-        }
-    }
-    Ok(true)
-}
-
 // --- Audit log ---
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
@@ -802,7 +903,7 @@ pub fn get_audit_log(conn: &Connection, limit: usize) -> Result<Vec<AuditLogEntr
                 created_at: row.get(5)?,
             })
         })?
-        .filter_map(|r| r.ok())
+        .filter_map(log_row_err)
         .collect();
     Ok(rows)
 }
@@ -834,6 +935,77 @@ pub fn delete_setting(conn: &Connection, key: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+use crate::scope_path;
+
+fn escape_like(path: &str) -> String {
+    path.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
+pub fn prune_index_outside_scope(
+    conn: &Connection,
+    allowed_roots: &[String],
+    blocked_roots: &[String],
+) -> Result<usize, AppError> {
+    if allowed_roots.is_empty() {
+        return Ok(0);
+    }
+
+    let mut sql = String::from("SELECT path FROM files WHERE ");
+    let mut param_values: Vec<String> = Vec::new();
+
+    // NOT within any allowed root
+    let mut allowed_clauses = Vec::new();
+    for root in allowed_roots {
+        let normalized = scope_path::normalize(root);
+        let idx = param_values.len() + 1;
+        allowed_clauses.push(format!(
+            "(path = ?{} OR path LIKE ?{} ESCAPE '\\')",
+            idx,
+            idx + 1
+        ));
+        param_values.push(normalized.clone());
+        param_values.push(format!("{}/%", escape_like(&normalized)));
+    }
+    sql.push_str(&format!("(NOT ({}))", allowed_clauses.join(" OR ")));
+
+    // OR within any blocked root
+    if !blocked_roots.is_empty() {
+        let mut blocked_clauses = Vec::new();
+        for root in blocked_roots {
+            let normalized = scope_path::normalize(root);
+            let idx = param_values.len() + 1;
+            blocked_clauses.push(format!(
+                "(path = ?{} OR path LIKE ?{} ESCAPE '\\')",
+                idx,
+                idx + 1
+            ));
+            param_values.push(normalized.clone());
+            param_values.push(format!("{}/%", escape_like(&normalized)));
+        }
+        sql.push_str(&format!(" OR ({})", blocked_clauses.join(" OR ")));
+    }
+
+    let params_refs: Vec<&dyn rusqlite::types::ToSql> = param_values
+        .iter()
+        .map(|v| v as &dyn rusqlite::types::ToSql)
+        .collect();
+    let mut stmt = conn.prepare(&sql)?;
+    let stale_paths: Vec<String> = stmt
+        .query_map(params_refs.as_slice(), |row| row.get::<_, String>(0))?
+        .filter_map(log_row_err)
+        .collect();
+
+    let mut removed = 0usize;
+    for path in stale_paths {
+        delete_file_index(conn, &path)?;
+        removed += 1;
+    }
+
+    Ok(removed)
+}
+
 // --- Cascade delete (removes file from all index tables) ---
 
 pub fn delete_file_index(conn: &Connection, file_path: &str) -> Result<(), AppError> {
@@ -850,7 +1022,119 @@ pub fn delete_file_index(conn: &Connection, file_path: &str) -> Result<(), AppEr
         "DELETE FROM vec_index WHERE file_path = ?1",
         params![file_path],
     )?;
+    let _ = delete_vec_embedding_meta(conn, file_path)?;
     Ok(())
+}
+
+pub fn delete_file_index_subtree(conn: &Connection, root_path: &str) -> Result<usize, AppError> {
+    let normalized = scope_path::normalize(root_path);
+    let slash_like = format!("{}/%", escape_like(&normalized));
+
+    let backslash_base = root_path.trim_end_matches(['\\', '/']);
+    let backslash_like = format!("{}\\\\%", escape_like(backslash_base));
+
+    let removed = conn.execute(
+        "DELETE FROM files
+         WHERE path = ?1
+            OR path LIKE ?2 ESCAPE '\\'
+            OR path LIKE ?3 ESCAPE '\\'",
+        params![normalized, slash_like, backslash_like],
+    )?;
+
+    conn.execute(
+        "DELETE FROM ocr_text
+         WHERE file_path = ?1
+            OR file_path LIKE ?2 ESCAPE '\\'
+            OR file_path LIKE ?3 ESCAPE '\\'",
+        params![normalized, slash_like, backslash_like],
+    )?;
+    conn.execute(
+        "DELETE FROM files_fts
+         WHERE file_path = ?1
+            OR file_path LIKE ?2 ESCAPE '\\'
+            OR file_path LIKE ?3 ESCAPE '\\'",
+        params![normalized, slash_like, backslash_like],
+    )?;
+    conn.execute(
+        "DELETE FROM vec_index
+         WHERE file_path = ?1
+            OR file_path LIKE ?2 ESCAPE '\\'
+            OR file_path LIKE ?3 ESCAPE '\\'",
+        params![normalized, slash_like, backslash_like],
+    )?;
+    conn.execute(
+        "DELETE FROM vec_embedding_meta
+         WHERE file_path = ?1
+            OR file_path LIKE ?2 ESCAPE '\\'
+            OR file_path LIKE ?3 ESCAPE '\\'",
+        params![normalized, slash_like, backslash_like],
+    )?;
+
+    Ok(removed)
+}
+
+pub fn cleanup_stale_embeddings(conn: &Connection) -> Result<usize, AppError> {
+    let removed = conn.execute(
+        "DELETE FROM vec_index WHERE file_path NOT IN (SELECT path FROM files)",
+        [],
+    )?;
+    conn.execute(
+        "DELETE FROM vec_embedding_meta WHERE file_path NOT IN (SELECT file_path FROM vec_index)",
+        [],
+    )?;
+
+    Ok(removed)
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ClearIndexedDataReport {
+    pub files_removed: usize,
+    pub ocr_removed: usize,
+    pub fts_cleared: bool,
+    pub vec_removed: usize,
+    pub vec_meta_removed: usize,
+}
+
+pub fn clear_all_indexed_data(conn: &Connection) -> Result<ClearIndexedDataReport, AppError> {
+    let files_removed = conn.execute("DELETE FROM files", [])?;
+    let ocr_removed = conn.execute("DELETE FROM ocr_text", [])?;
+    conn.execute("DELETE FROM files_fts", [])?;
+    let vec_removed = conn.execute("DELETE FROM vec_index", [])?;
+    let vec_meta_removed = conn.execute("DELETE FROM vec_embedding_meta", [])?;
+
+    Ok(ClearIndexedDataReport {
+        files_removed,
+        ocr_removed,
+        fts_cleared: true,
+        vec_removed,
+        vec_meta_removed,
+    })
+}
+
+pub fn cleanup_stale_vec_by_age(conn: &Connection, retention_days: i64) -> Result<usize, AppError> {
+    if retention_days < 0 {
+        return Ok(0);
+    }
+
+    let modifier = format!("-{retention_days} days");
+    let mut stmt = conn.prepare(
+        "SELECT file_path
+         FROM vec_embedding_meta
+         WHERE datetime(embedded_at) < datetime('now', ?1)",
+    )?;
+
+    let stale_paths = stmt
+        .query_map(params![modifier], |row| row.get::<_, String>(0))?
+        .filter_map(log_row_err)
+        .collect::<Vec<_>>();
+
+    let mut removed = 0usize;
+    for path in stale_paths {
+        removed += conn.execute("DELETE FROM vec_index WHERE file_path = ?1", params![path])?;
+        let _ = delete_vec_embedding_meta(conn, &path)?;
+    }
+
+    Ok(removed)
 }
 
 // Needed for rusqlite optional query results
@@ -1149,6 +1433,34 @@ mod tests {
     }
 
     #[test]
+    fn test_insert_vec_upserts_meta_timestamp() {
+        let conn = setup_db();
+        let embedding = vec![0.6f32; 384];
+        insert_vec(&conn, "/file_meta.txt", &embedding).unwrap();
+
+        let first_embedded_at: String = conn
+            .query_row(
+                "SELECT embedded_at FROM vec_embedding_meta WHERE file_path = ?1",
+                params!["/file_meta.txt"],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        upsert_vec_embedding_meta(&conn, "/file_meta.txt", "2001-01-01T00:00:00Z").unwrap();
+
+        let second_embedded_at: String = conn
+            .query_row(
+                "SELECT embedded_at FROM vec_embedding_meta WHERE file_path = ?1",
+                params!["/file_meta.txt"],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert_ne!(first_embedded_at, second_embedded_at);
+        assert_eq!(second_embedded_at, "2001-01-01T00:00:00Z");
+    }
+
+    #[test]
     fn test_delete_file_index_cascades() {
         let conn = setup_db();
         let path = "/home/user/doc.pdf";
@@ -1185,6 +1497,223 @@ mod tests {
         assert!(search_vec(&conn, &vec![0.1f32; 384], 10)
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn test_cleanup_stale_embeddings_removes_orphans() {
+        let conn = setup_db();
+        insert_vec(&conn, "/tmp/orphan_embedding.txt", &vec![0.2f32; 384]).unwrap();
+
+        let removed = cleanup_stale_embeddings(&conn).unwrap();
+
+        assert_eq!(removed, 1);
+        assert!(search_vec(&conn, &vec![0.2f32; 384], 10)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn test_cleanup_stale_embeddings_keeps_vectors_when_file_row_exists() {
+        let conn = setup_db();
+        let dir = std::env::temp_dir().join("frogger_test_cleanup_stale_embeddings");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let file_path = dir.join("gone.txt");
+        fs::write(&file_path, "hello").unwrap();
+        let file_path_str = path_str(&file_path);
+
+        let entry = FileEntry {
+            path: file_path_str.clone(),
+            name: "gone.txt".to_string(),
+            extension: Some("txt".to_string()),
+            mime_type: Some("text/plain".to_string()),
+            size_bytes: Some(5),
+            created_at: None,
+            modified_at: Some("2025-01-01T00:00:00Z".to_string()),
+            is_directory: false,
+            parent_path: Some(path_str(&dir)),
+        };
+        insert_file(&conn, &entry).unwrap();
+        insert_fts(&conn, &file_path_str, "gone.txt", "hello").unwrap();
+        insert_vec(&conn, &file_path_str, &vec![0.4f32; 384]).unwrap();
+
+        fs::remove_file(&file_path).unwrap();
+
+        let removed = cleanup_stale_embeddings(&conn).unwrap();
+
+        assert_eq!(removed, 0);
+        assert!(get_by_path(&conn, &file_path_str).unwrap().is_some());
+        assert!(!search_fts(&conn, "gone", 10).unwrap().is_empty());
+        assert!(!search_vec(&conn, &vec![0.4f32; 384], 10)
+            .unwrap()
+            .is_empty());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_cleanup_stale_embeddings_keeps_existing_files() {
+        let conn = setup_db();
+        let dir = std::env::temp_dir().join("frogger_test_cleanup_keep_embeddings");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let file_path = dir.join("alive.txt");
+        fs::write(&file_path, "alive").unwrap();
+        let file_path_str = path_str(&file_path);
+
+        let entry = FileEntry {
+            path: file_path_str.clone(),
+            name: "alive.txt".to_string(),
+            extension: Some("txt".to_string()),
+            mime_type: Some("text/plain".to_string()),
+            size_bytes: Some(5),
+            created_at: None,
+            modified_at: Some("2025-01-01T00:00:00Z".to_string()),
+            is_directory: false,
+            parent_path: Some(path_str(&dir)),
+        };
+        insert_file(&conn, &entry).unwrap();
+        let embedding = vec![0.3f32; 384];
+        insert_vec(&conn, &file_path_str, &embedding).unwrap();
+
+        let removed = cleanup_stale_embeddings(&conn).unwrap();
+
+        assert_eq!(removed, 0);
+        let vec_hits = search_vec(&conn, &embedding, 10).unwrap();
+        assert!(vec_hits.iter().any(|hit| hit.file_path == file_path_str));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_cleanup_stale_vec_by_age_removes_only_vec_rows() {
+        let conn = setup_db();
+        let path = "/home/user/stale.txt";
+        let file = FileEntry {
+            path: path.to_string(),
+            name: "stale.txt".to_string(),
+            extension: Some("txt".to_string()),
+            mime_type: Some("text/plain".to_string()),
+            size_bytes: Some(4),
+            created_at: None,
+            modified_at: Some("2025-01-01T00:00:00Z".to_string()),
+            is_directory: false,
+            parent_path: Some("/home/user".to_string()),
+        };
+        insert_file(&conn, &file).unwrap();
+        insert_fts(&conn, path, "stale.txt", "stale content").unwrap();
+        insert_ocr_text(
+            &conn,
+            path,
+            "stale content",
+            "eng",
+            None,
+            "2025-01-01T00:00:00Z",
+        )
+        .unwrap();
+        insert_vec(&conn, path, &vec![0.7f32; 384]).unwrap();
+
+        upsert_vec_embedding_meta(&conn, path, "2001-01-01T00:00:00Z").unwrap();
+
+        let removed = cleanup_stale_vec_by_age(&conn, 7).unwrap();
+
+        assert_eq!(removed, 1);
+        assert!(get_by_path(&conn, path).unwrap().is_some());
+        assert!(get_ocr_text(&conn, path).unwrap().is_some());
+        assert!(!search_fts(&conn, "stale", 10).unwrap().is_empty());
+        assert!(search_vec(&conn, &vec![0.7f32; 384], 10)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn test_list_files_missing_or_expired_vec_returns_candidates() {
+        let conn = setup_db();
+
+        let with_vec = FileEntry {
+            path: "/docs/with_vec.txt".to_string(),
+            name: "with_vec.txt".to_string(),
+            extension: Some("txt".to_string()),
+            mime_type: Some("text/plain".to_string()),
+            size_bytes: Some(1),
+            created_at: None,
+            modified_at: Some("2025-01-01T00:00:00Z".to_string()),
+            is_directory: false,
+            parent_path: Some("/docs".to_string()),
+        };
+        let missing_vec = FileEntry {
+            path: "/docs/missing_vec.txt".to_string(),
+            name: "missing_vec.txt".to_string(),
+            extension: Some("txt".to_string()),
+            mime_type: Some("text/plain".to_string()),
+            size_bytes: Some(1),
+            created_at: None,
+            modified_at: Some("2025-01-01T00:00:00Z".to_string()),
+            is_directory: false,
+            parent_path: Some("/docs".to_string()),
+        };
+        let expired_vec = FileEntry {
+            path: "/docs/expired_vec.txt".to_string(),
+            name: "expired_vec.txt".to_string(),
+            extension: Some("txt".to_string()),
+            mime_type: Some("text/plain".to_string()),
+            size_bytes: Some(1),
+            created_at: None,
+            modified_at: Some("2025-01-01T00:00:00Z".to_string()),
+            is_directory: false,
+            parent_path: Some("/docs".to_string()),
+        };
+        insert_file(&conn, &with_vec).unwrap();
+        insert_file(&conn, &missing_vec).unwrap();
+        insert_file(&conn, &expired_vec).unwrap();
+
+        insert_vec(&conn, &with_vec.path, &vec![0.11f32; 384]).unwrap();
+        insert_vec(&conn, &expired_vec.path, &vec![0.22f32; 384]).unwrap();
+        upsert_vec_embedding_meta(&conn, &expired_vec.path, "2001-01-01T00:00:00Z").unwrap();
+
+        let candidates = list_files_missing_or_expired_vec(&conn, 7, 10).unwrap();
+        assert!(candidates.contains(&missing_vec.path));
+        assert!(candidates.contains(&expired_vec.path));
+        assert!(!candidates.contains(&with_vec.path));
+    }
+
+    #[test]
+    fn test_list_embedding_candidates_includes_ocr_when_present() {
+        let conn = setup_db();
+
+        let file = FileEntry {
+            path: "/docs/embed_target.txt".to_string(),
+            name: "embed_target.txt".to_string(),
+            extension: Some("txt".to_string()),
+            mime_type: Some("text/plain".to_string()),
+            size_bytes: Some(5),
+            created_at: None,
+            modified_at: Some("2025-01-01T00:00:00Z".to_string()),
+            is_directory: false,
+            parent_path: Some("/docs".to_string()),
+        };
+        insert_file(&conn, &file).unwrap();
+        insert_ocr_text(
+            &conn,
+            &file.path,
+            "important scanned text",
+            "eng",
+            None,
+            "2025-01-01T00:00:00Z",
+        )
+        .unwrap();
+
+        let candidates = list_embedding_candidates(&conn).unwrap();
+        let target = candidates
+            .iter()
+            .find(|candidate| candidate.file_path == file.path)
+            .expect("candidate missing");
+
+        assert_eq!(target.file_name, "embed_target.txt");
+        assert_eq!(target.extension.as_deref(), Some("txt"));
+        assert_eq!(target.ocr_text.as_deref(), Some("important scanned text"));
     }
 
     #[test]
@@ -1234,6 +1763,138 @@ mod tests {
 
         delete_setting(&conn, "api_key").unwrap();
         assert!(get_setting(&conn, "api_key").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_prune_index_outside_scope_removes_out_of_scope_entries() {
+        let conn = setup_db();
+
+        let in_scope = FileEntry {
+            path: "/scope/Documents/in_scope.txt".to_string(),
+            name: "in_scope.txt".to_string(),
+            extension: Some("txt".to_string()),
+            mime_type: Some("text/plain".to_string()),
+            size_bytes: Some(3),
+            created_at: None,
+            modified_at: Some("2025-01-01T00:00:00Z".to_string()),
+            is_directory: false,
+            parent_path: Some("/scope/Documents".to_string()),
+        };
+        let out_scope = FileEntry {
+            path: "/scope/Library/out_scope.txt".to_string(),
+            name: "out_scope.txt".to_string(),
+            extension: Some("txt".to_string()),
+            mime_type: Some("text/plain".to_string()),
+            size_bytes: Some(3),
+            created_at: None,
+            modified_at: Some("2025-01-01T00:00:00Z".to_string()),
+            is_directory: false,
+            parent_path: Some("/scope/Library".to_string()),
+        };
+
+        insert_file(&conn, &in_scope).unwrap();
+        insert_file(&conn, &out_scope).unwrap();
+        insert_fts(&conn, &in_scope.path, &in_scope.name, "content").unwrap();
+        insert_fts(&conn, &out_scope.path, &out_scope.name, "content").unwrap();
+
+        let removed =
+            prune_index_outside_scope(&conn, &["/scope/Documents".to_string()], &[]).unwrap();
+
+        assert_eq!(removed, 1);
+        assert!(get_by_path(&conn, &in_scope.path).unwrap().is_some());
+        assert!(get_by_path(&conn, &out_scope.path).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_prune_index_outside_scope_removes_blocked_entries_even_when_allowed() {
+        let conn = setup_db();
+
+        let keep_entry = FileEntry {
+            path: "/scope/Documents/keep.txt".to_string(),
+            name: "keep.txt".to_string(),
+            extension: Some("txt".to_string()),
+            mime_type: Some("text/plain".to_string()),
+            size_bytes: Some(3),
+            created_at: None,
+            modified_at: Some("2025-01-01T00:00:00Z".to_string()),
+            is_directory: false,
+            parent_path: Some("/scope/Documents".to_string()),
+        };
+        let blocked_entry = FileEntry {
+            path: "/scope/System/drop.txt".to_string(),
+            name: "drop.txt".to_string(),
+            extension: Some("txt".to_string()),
+            mime_type: Some("text/plain".to_string()),
+            size_bytes: Some(3),
+            created_at: None,
+            modified_at: Some("2025-01-01T00:00:00Z".to_string()),
+            is_directory: false,
+            parent_path: Some("/scope/System".to_string()),
+        };
+
+        insert_file(&conn, &keep_entry).unwrap();
+        insert_file(&conn, &blocked_entry).unwrap();
+
+        let removed = prune_index_outside_scope(
+            &conn,
+            &["/scope".to_string()],
+            &["/scope/System".to_string()],
+        )
+        .unwrap();
+
+        assert_eq!(removed, 1);
+        assert!(get_by_path(&conn, &keep_entry.path).unwrap().is_some());
+        assert!(get_by_path(&conn, &blocked_entry.path).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_delete_file_index_subtree_removes_descendants() {
+        let conn = setup_db();
+
+        let parent = FileEntry {
+            path: "/scope/System".to_string(),
+            name: "System".to_string(),
+            extension: None,
+            mime_type: None,
+            size_bytes: None,
+            created_at: None,
+            modified_at: Some("2025-01-01T00:00:00Z".to_string()),
+            is_directory: true,
+            parent_path: Some("/scope".to_string()),
+        };
+        let child = FileEntry {
+            path: "/scope/System/bin/tool.txt".to_string(),
+            name: "tool.txt".to_string(),
+            extension: Some("txt".to_string()),
+            mime_type: Some("text/plain".to_string()),
+            size_bytes: Some(4),
+            created_at: None,
+            modified_at: Some("2025-01-01T00:00:00Z".to_string()),
+            is_directory: false,
+            parent_path: Some("/scope/System/bin".to_string()),
+        };
+        let sibling = FileEntry {
+            path: "/scope/Documents/keep.txt".to_string(),
+            name: "keep.txt".to_string(),
+            extension: Some("txt".to_string()),
+            mime_type: Some("text/plain".to_string()),
+            size_bytes: Some(4),
+            created_at: None,
+            modified_at: Some("2025-01-01T00:00:00Z".to_string()),
+            is_directory: false,
+            parent_path: Some("/scope/Documents".to_string()),
+        };
+
+        insert_file(&conn, &parent).unwrap();
+        insert_file(&conn, &child).unwrap();
+        insert_file(&conn, &sibling).unwrap();
+
+        let removed = delete_file_index_subtree(&conn, "/scope/System").unwrap();
+
+        assert_eq!(removed, 2);
+        assert!(get_by_path(&conn, &parent.path).unwrap().is_none());
+        assert!(get_by_path(&conn, &child.path).unwrap().is_none());
+        assert!(get_by_path(&conn, &sibling.path).unwrap().is_some());
     }
 
     #[test]
@@ -1369,5 +2030,55 @@ mod tests {
         assert!(!needs_reindex(&conn, path, "2025-06-01T00:00:00Z"));
         assert!(!needs_reindex(&conn, path, "2025-05-01T00:00:00Z"));
         assert!(needs_reindex(&conn, path, "2025-07-01T00:00:00Z"));
+    }
+
+    #[test]
+    fn test_clear_all_indexed_data() {
+        let conn = setup_db();
+
+        let file = FileEntry {
+            path: "/docs/report.pdf".to_string(),
+            name: "report.pdf".to_string(),
+            extension: Some("pdf".to_string()),
+            mime_type: Some("application/pdf".to_string()),
+            size_bytes: Some(1000),
+            created_at: None,
+            modified_at: Some("2025-01-01T00:00:00Z".to_string()),
+            is_directory: false,
+            parent_path: Some("/docs".to_string()),
+        };
+        insert_file(&conn, &file).unwrap();
+        insert_ocr_text(
+            &conn,
+            &file.path,
+            "annual report",
+            "eng",
+            None,
+            "2025-01-01T00:00:00Z",
+        )
+        .unwrap();
+        insert_fts(&conn, &file.path, "report.pdf", "annual report").unwrap();
+        insert_vec(&conn, &file.path, &vec![0.5f32; 384]).unwrap();
+
+        // Non-index data should survive
+        insert_chat_message(&conn, "session-1", "user", "hello").unwrap();
+
+        let report = clear_all_indexed_data(&conn).unwrap();
+        assert_eq!(report.files_removed, 1);
+        assert_eq!(report.ocr_removed, 1);
+        assert!(report.fts_cleared);
+        assert_eq!(report.vec_removed, 1);
+        assert_eq!(report.vec_meta_removed, 1);
+
+        // All index tables empty
+        assert!(get_by_path(&conn, &file.path).unwrap().is_none());
+        assert!(get_ocr_text(&conn, &file.path).unwrap().is_none());
+        assert!(search_fts(&conn, "report", 10).unwrap().is_empty());
+        assert!(search_vec(&conn, &vec![0.5f32; 384], 10)
+            .unwrap()
+            .is_empty());
+
+        // Chat history intact
+        assert!(!get_chat_messages(&conn, "session-1").unwrap().is_empty());
     }
 }

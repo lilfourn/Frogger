@@ -102,6 +102,24 @@ describe("PermissionSettings", () => {
     expect(mockDeletePermissionScope).not.toHaveBeenCalled();
   });
 
+  it("shows an error message when profile update fails", async () => {
+    mockSetPermissionDefaults.mockRejectedValueOnce(new Error("invoke failed"));
+
+    render(<PermissionSettings />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("permission-profile-full")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId("permission-profile-full"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("permission-profile-message")).toHaveTextContent(
+        "Failed to update permission mode. Please try again.",
+      );
+    });
+  });
+
   it("shows updated empty-state text", async () => {
     render(<PermissionSettings />);
     await waitFor(() => {

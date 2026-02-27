@@ -15,7 +15,6 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
-tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-os = "2"
@@ -32,11 +31,13 @@ sha2 = "0.10"
 mime_guess = "2"
 tracing = "0.1"
 dirs = "6"
+dunce = "1"
 sqlite-vec = "0.1"
 zerocopy = { version = "0.8", features = ["derive"] }
 notify-debouncer-mini = "0.7"
 leptess = "0.14"
 fastembed = "5"
+ort = "=2.0.0-rc.11"
 anthropic-sdk = "=0.1.5"
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 sentry = "0.46"

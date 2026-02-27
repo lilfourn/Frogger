@@ -166,6 +166,14 @@ pub fn extract_text(
     file_path: &str,
     allow_once: bool,
 ) -> Result<Option<String>, AppError> {
+    let path = Path::new(file_path);
+    if !is_spreadsheet_candidate(path) {
+        return Ok(None);
+    }
+    let Some(ext) = normalized_extension(path) else {
+        return Ok(None);
+    };
+
     if permission_service::enforce(
         conn,
         file_path,
@@ -176,14 +184,6 @@ pub fn extract_text(
     {
         return Ok(None);
     }
-
-    let path = Path::new(file_path);
-    if !is_spreadsheet_candidate(path) {
-        return Ok(None);
-    }
-    let Some(ext) = normalized_extension(path) else {
-        return Ok(None);
-    };
 
     let text = if ext == "csv" {
         extract_csv_text(file_path)?

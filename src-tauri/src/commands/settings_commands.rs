@@ -1,9 +1,14 @@
-use tauri::{command, State};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{LazyLock, Mutex};
+use std::time::Duration;
+
+use tauri::{command, AppHandle, Emitter, State};
 
 use crate::data::repository::{
     self, AuditLogEntry, PermissionScope, PermissionScopeNormalizationReport,
 };
 use crate::error::AppError;
+use crate::services::embedding_service::{ReembedProgressState, ReembedReport};
 use crate::services::permission_service::{
     self, PermissionCapability, PermissionDefaults, PermissionEvaluation,
     PermissionGrantTargetRequestItem, PermissionMode,
@@ -11,9 +16,26 @@ use crate::services::permission_service::{
 use crate::state::AppState;
 
 const KEYRING_SERVICE: &str = "frogger";
-const KEYRING_USER: &str = "api_key";
+const ANTHROPIC_KEYRING_USER: &str = "api_key";
 
 const BLOCKED_SETTINGS_KEYS: &[&str] = &["api_key"];
+
+static REEMBED_RUNNING: AtomicBool = AtomicBool::new(false);
+static REEMBED_STATUS: LazyLock<Mutex<ReembedProgressState>> =
+    LazyLock::new(|| Mutex::new(ReembedProgressState::idle()));
+
+fn current_reembed_status() -> ReembedProgressState {
+    REEMBED_STATUS
+        .lock()
+        .map(|guard| guard.clone())
+        .unwrap_or_else(|_| ReembedProgressState::idle())
+}
+
+fn set_reembed_status(status: ReembedProgressState) {
+    if let Ok(mut guard) = REEMBED_STATUS.lock() {
+        *guard = status;
+    }
+}
 
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -58,21 +80,21 @@ fn action_capability(action: &str) -> Result<PermissionCapability, AppError> {
     }
 }
 
-fn keyring_entry() -> Result<keyring::Entry, AppError> {
-    keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER)
+fn keyring_entry_for(user: &str) -> Result<keyring::Entry, AppError> {
+    keyring::Entry::new(KEYRING_SERVICE, user)
         .map_err(|e| AppError::General(format!("Keychain error: {e}")))
 }
 
 #[command]
 pub fn save_api_key(key: String) -> Result<(), AppError> {
-    keyring_entry()?
+    keyring_entry_for(ANTHROPIC_KEYRING_USER)?
         .set_password(&key)
         .map_err(|e| AppError::General(format!("Failed to save API key: {e}")))
 }
 
 #[command]
 pub fn has_api_key() -> Result<bool, AppError> {
-    match keyring_entry()?.get_password() {
+    match keyring_entry_for(ANTHROPIC_KEYRING_USER)?.get_password() {
         Ok(_) => Ok(true),
         Err(keyring::Error::NoEntry) => Ok(false),
         Err(e) => Err(AppError::General(format!("Keychain error: {e}"))),
@@ -81,7 +103,7 @@ pub fn has_api_key() -> Result<bool, AppError> {
 
 #[command]
 pub fn delete_api_key() -> Result<(), AppError> {
-    match keyring_entry()?.delete_credential() {
+    match keyring_entry_for(ANTHROPIC_KEYRING_USER)?.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
         Err(e) => Err(AppError::General(format!("Failed to delete API key: {e}"))),
     }
@@ -282,4 +304,94 @@ pub fn get_audit_log(
         .lock()
         .map_err(|e| AppError::General(e.to_string()))?;
     repository::get_audit_log(&conn, limit.unwrap_or(100))
+}
+
+#[command]
+pub fn reembed_indexed_files(state: State<'_, AppState>) -> Result<ReembedReport, AppError> {
+    let conn = state
+        .db
+        .lock()
+        .map_err(|e| AppError::General(e.to_string()))?;
+    crate::services::embedding_service::reembed_indexed_files(&conn)
+}
+
+#[command]
+pub fn start_reembed_indexed_files(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<ReembedProgressState, AppError> {
+    if REEMBED_RUNNING.swap(true, Ordering::AcqRel) {
+        return Ok(current_reembed_status());
+    }
+
+    let db_path = state.db_path.clone();
+    let app_handle = app.clone();
+
+    let initial = ReembedProgressState {
+        status: "running".to_string(),
+        processed: 0,
+        total: 0,
+        embedded: 0,
+        skipped_missing: 0,
+        failed: 0,
+        message: "Starting embedding rebuild...".to_string(),
+    };
+    set_reembed_status(initial.clone());
+    let _ = app.emit("reembed-progress", &initial);
+
+    std::thread::spawn(move || {
+        let conn = match rusqlite::Connection::open(&db_path) {
+            Ok(conn) => {
+                let _ = conn.busy_timeout(Duration::from_secs(5));
+                conn
+            }
+            Err(err) => {
+                let status = ReembedProgressState {
+                    status: "error".to_string(),
+                    processed: 0,
+                    total: 0,
+                    embedded: 0,
+                    skipped_missing: 0,
+                    failed: 0,
+                    message: format!("Failed to open database for re-embed: {err}"),
+                };
+                set_reembed_status(status.clone());
+                let _ = app_handle.emit("reembed-progress", &status);
+                REEMBED_RUNNING.store(false, Ordering::Release);
+                return;
+            }
+        };
+
+        let result = crate::services::embedding_service::reembed_indexed_files_with_progress(
+            &conn,
+            |progress| {
+                set_reembed_status(progress.clone());
+                let _ = app_handle.emit("reembed-progress", &progress);
+            },
+        );
+
+        if let Err(err) = result {
+            let previous = current_reembed_status();
+            let status = ReembedProgressState {
+                status: "error".to_string(),
+                processed: previous.processed,
+                total: previous.total,
+                embedded: previous.embedded,
+                skipped_missing: previous.skipped_missing,
+                failed: previous.failed,
+                message: format!("Rebuild failed: {err}"),
+            };
+            set_reembed_status(status.clone());
+            let _ = app_handle.emit("reembed-progress", &status);
+        }
+
+        REEMBED_RUNNING.store(false, Ordering::Release);
+    });
+
+    Ok(current_reembed_status())
+}
+
+#[command]
+pub fn get_reembed_status() -> ReembedProgressState {
+    current_reembed_status()
 }

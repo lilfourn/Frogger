@@ -20,6 +20,57 @@ export async function setSetting(key: string, value: string): Promise<void> {
   return invoke("set_setting", { key, value });
 }
 
+export interface ReembedReport {
+  processed: number;
+  embedded: number;
+  skipped_missing: number;
+  failed: number;
+}
+
+export interface ReembedProgressState {
+  status: "idle" | "running" | "done" | "error";
+  processed: number;
+  total: number;
+  embedded: number;
+  skipped_missing: number;
+  failed: number;
+  message: string;
+}
+
+export async function reembedIndexedFiles(): Promise<ReembedReport> {
+  return invoke<ReembedReport>("reembed_indexed_files");
+}
+
+export async function startReembedIndexedFiles(): Promise<ReembedProgressState> {
+  return invoke<ReembedProgressState>("start_reembed_indexed_files");
+}
+
+export async function getReembedStatus(): Promise<ReembedProgressState> {
+  return invoke<ReembedProgressState>("get_reembed_status");
+}
+
+// --- Indexing management ---
+
+export interface ClearIndexedDataReport {
+  files_removed: number;
+  ocr_removed: number;
+  fts_cleared: boolean;
+  vec_removed: number;
+  vec_meta_removed: number;
+}
+
+export async function clearIndexedData(): Promise<ClearIndexedDataReport> {
+  return invoke<ClearIndexedDataReport>("clear_indexed_data");
+}
+
+export async function stopIndexing(): Promise<void> {
+  return invoke("stop_indexing");
+}
+
+export async function startIndexing(directory: string): Promise<void> {
+  return invoke("start_indexing", { directory });
+}
+
 // --- Permission scopes ---
 
 export type PermissionMode = "deny" | "ask" | "allow";
@@ -114,10 +165,10 @@ export async function getPermissionDefaults(): Promise<PermissionDefaults> {
 
 export async function setPermissionDefaults(defaults: PermissionDefaults): Promise<void> {
   return invoke("set_permission_defaults", {
-    content_scan_default: defaults.content_scan_default,
-    modification_default: defaults.modification_default,
-    ocr_default: defaults.ocr_default,
-    indexing_default: defaults.indexing_default,
+    contentScanDefault: defaults.content_scan_default,
+    modificationDefault: defaults.modification_default,
+    ocrDefault: defaults.ocr_default,
+    indexingDefault: defaults.indexing_default,
   });
 }
 

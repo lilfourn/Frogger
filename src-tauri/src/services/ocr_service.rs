@@ -41,10 +41,6 @@ pub fn process_file(
     file_name: &str,
     modified_at: &str,
 ) -> Result<Option<String>, AppError> {
-    if permission_service::enforce(conn, file_path, PermissionCapability::Ocr, false).is_err() {
-        return Ok(None);
-    }
-
     if !is_ocr_candidate(Path::new(file_path)) {
         return Ok(None);
     }
@@ -53,6 +49,10 @@ pub fn process_file(
         if meta.len() < MIN_OCR_FILE_SIZE {
             return Ok(None);
         }
+    }
+
+    if permission_service::enforce(conn, file_path, PermissionCapability::Ocr, false).is_err() {
+        return Ok(None);
     }
 
     if !should_process(conn, file_path, modified_at) {

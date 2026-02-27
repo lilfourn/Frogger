@@ -60,6 +60,8 @@ export function PermissionSettings() {
   const [newPath, setNewPath] = useState("");
   const [loading, setLoading] = useState(true);
   const [savingProfile, setSavingProfile] = useState(false);
+  const [profileMessage, setProfileMessage] = useState<string | null>(null);
+  const [profileMessageTone, setProfileMessageTone] = useState<"success" | "error">("success");
 
   const load = useCallback(async () => {
     try {
@@ -84,6 +86,7 @@ export function PermissionSettings() {
 
   async function handleProfileChange(profile: "full" | "ask") {
     setSavingProfile(true);
+    setProfileMessage(null);
     try {
       if (profile === "full") {
         await setPermissionDefaults(FULL_ACCESS_DEFAULTS);
@@ -95,6 +98,28 @@ export function PermissionSettings() {
       } else {
         await setPermissionDefaults(ASK_DEFAULTS);
       }
+
+      const [nextScopes, nextDefaults] = await Promise.all([
+        getPermissionScopes(),
+        getPermissionDefaults(),
+      ]);
+      setScopes(nextScopes);
+      setDefaults(nextDefaults);
+
+      if (profileForDefaults(nextDefaults) !== profile) {
+        throw new Error(`permission profile did not persist as ${profile}`);
+      }
+
+      setProfileMessageTone("success");
+      setProfileMessage(
+        profile === "full"
+          ? "Full Access is active for AI organization actions."
+          : "Ask mode is active for AI organization actions.",
+      );
+    } catch (err) {
+      console.error("[PermissionSettings] Failed to update profile:", err);
+      setProfileMessageTone("error");
+      setProfileMessage("Failed to update permission mode. Please try again.");
       await load();
     } finally {
       setSavingProfile(false);
@@ -169,6 +194,16 @@ export function PermissionSettings() {
         <p className="mt-2 text-xs text-[var(--color-text-secondary)]">
           Full Access still blocks protected system and program paths.
         </p>
+        {profileMessage && (
+          <p
+            data-testid="permission-profile-message"
+            className={`mt-1 text-xs ${
+              profileMessageTone === "error" ? "text-red-500" : "text-[var(--color-text-secondary)]"
+            }`}
+          >
+            {profileMessage}
+          </p>
+        )}
         {profile === "custom" && (
           <p className="mt-1 text-xs text-[var(--color-text-secondary)]">
             Custom defaults are active. Pick Full Access or Ask to normalize.

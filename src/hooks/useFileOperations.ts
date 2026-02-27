@@ -8,6 +8,7 @@ import {
   redoOperation,
   listDirectory,
 } from "../services/fileService";
+import { normalizePath } from "../utils/paths";
 
 export function useFileOperations() {
   const currentPath = useFileStore((s) => s.currentPath);
@@ -27,7 +28,8 @@ export function useFileOperations() {
   const handleCreateDir = useCallback(
     async (name: string) => {
       try {
-        await createDirectory(`${currentPath}/${name}`);
+        const basePath = normalizePath(currentPath);
+        await createDirectory(`${basePath}/${name}`);
         await refresh();
       } catch (e) {
         setError(String(e));
@@ -38,7 +40,10 @@ export function useFileOperations() {
 
   const handleRename = useCallback(
     async (source: string, newName: string) => {
-      const parent = source.replace(/\/[^/]+\/?$/, "");
+      const normalizedSource = normalizePath(source);
+      const segments = normalizedSource.split("/");
+      segments.pop();
+      const parent = segments.join("/") || "/";
       const destination = `${parent}/${newName}`;
       try {
         await renameFile(source, destination);

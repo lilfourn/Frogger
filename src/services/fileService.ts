@@ -89,18 +89,22 @@ export async function deleteFiles(paths: string[]): Promise<void> {
   return invokeWithPermission("delete_files", { paths }, "delete_files", paths, "Delete files");
 }
 
-export async function copyFilesWithProgress(sources: string[], destDir: string): Promise<string[]> {
+export async function copyFilesWithProgress(
+  sources: string[],
+  destDir: string,
+  operationId?: string,
+): Promise<string[]> {
   return invokeWithPermission(
     "copy_files_with_progress",
-    { sources, destDir },
+    { sources, destDir, operationId },
     "copy_files_with_progress",
     [...sources, destDir],
     "Copy files",
   );
 }
 
-export async function cancelOperation(): Promise<void> {
-  return invoke("cancel_operation");
+export async function cancelOperation(operationId?: string): Promise<void> {
+  return invoke("cancel_operation", { operationId });
 }
 
 export async function undoOperation(): Promise<string> {

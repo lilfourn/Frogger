@@ -28,6 +28,7 @@ vi.mock("../../services/chatService", () => ({
   sendOrganizeExecute: vi.fn().mockResolvedValue(""),
   sendOrganizeApply: vi.fn().mockResolvedValue(""),
   cancelOrganize: vi.fn().mockResolvedValue(undefined),
+  getOrganizeStatus: vi.fn().mockResolvedValue(null),
 }));
 
 vi.mock("../../hooks/useChat", () => ({

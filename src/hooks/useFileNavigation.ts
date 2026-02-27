@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 import { create } from "zustand";
 import type { FileEntry } from "../types/file";
 
@@ -21,10 +21,14 @@ export const useNavStore = create<NavState>()((set) => ({
 export function useFileNavigation(entries: FileEntry[]) {
   const focusIndex = useNavStore((s) => s.focusIndex);
   const reset = useNavStore((s) => s.reset);
+  const entriesResetKey = useMemo(
+    () => entries.map((entry) => entry.path).join("\u0000"),
+    [entries],
+  );
 
   useEffect(() => {
     reset();
-  }, [entries, reset]);
+  }, [entriesResetKey, reset]);
 
   const moveDown = useCallback(() => {
     useNavStore.getState().moveDown(entries.length - 1);

@@ -466,7 +466,7 @@ mod tests {
     use crate::state::IndexingProgressState;
     use std::collections::HashMap;
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicBool, AtomicU64};
+    use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64};
     use std::sync::{Arc, Mutex, RwLock};
 
     fn test_conn(default_mode: &str) -> Connection {
@@ -485,13 +485,17 @@ mod tests {
             db: Mutex::new(Connection::open_in_memory().unwrap()),
             db_path: PathBuf::new(),
             cancel_flag: Arc::new(AtomicBool::new(false)),
+            file_operation_cancel_flags: Mutex::new(HashMap::new()),
             organize_cancel_flags: Mutex::new(HashMap::new()),
+            organize_status: Mutex::new(HashMap::new()),
+            organize_progress_sequence: AtomicU64::new(0),
             watcher_handle: Mutex::new(None),
             indexing_status: Arc::new(Mutex::new(IndexingProgressState {
                 processed: 0,
                 total: 0,
                 status: "done".to_string(),
             })),
+            last_user_interaction_at: Arc::new(AtomicI64::new(0)),
             permission_policy_cache: RwLock::new(None),
             permission_policy_version: AtomicU64::new(1),
         }

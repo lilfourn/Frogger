@@ -9,6 +9,18 @@ export interface ChatRecord {
   created_at: string;
 }
 
+export interface OrganizeProgressPayload {
+  sessionId: string;
+  rootPath: string;
+  phase: "indexing" | "planning" | "applying" | "done" | "cancelled" | "error";
+  processed: number;
+  total: number;
+  percent: number;
+  combinedPercent: number;
+  message: string;
+  sequence: number;
+}
+
 export async function sendChat(
   message: string,
   sessionId: string,
@@ -142,6 +154,12 @@ export async function cancelOrganize(
   organizeSessionId?: string,
 ): Promise<void> {
   return invoke("cancel_organize", { currentDir, organizeSessionId });
+}
+
+export async function getOrganizeStatus(
+  organizeSessionId: string,
+): Promise<OrganizeProgressPayload | null> {
+  return invoke<OrganizeProgressPayload | null>("get_organize_status", { organizeSessionId });
 }
 
 export async function newChatSession(): Promise<string> {

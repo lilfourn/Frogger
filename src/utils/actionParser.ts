@@ -14,6 +14,31 @@ export interface OrganizePlanStats {
   skipped_hidden: number;
   skipped_already_organized: number;
   chunks: number;
+  other_count?: number;
+  other_ratio?: number;
+  deterministic_assigned?: number;
+  llm_assigned?: number;
+  fallback_assigned?: number;
+  parse_failed_chunks?: number;
+  packed_directories?: number;
+  max_children_observed?: number;
+  avg_children_per_generated_dir?: number;
+  capacity_overflow_dirs?: number;
+  packing_llm_calls?: number;
+  folders_over_target?: number;
+  folders_over_hard_max?: number;
+  avg_depth_generated?: number;
+  fallback_label_rate?: number;
+}
+
+export interface OrganizePlacement {
+  path: string;
+  folder: string;
+  subfolder?: string;
+  packing_path?: string;
+  suggested_name?: string;
+  confidence?: number;
+  source?: string;
 }
 
 export interface OrganizePlan {
@@ -23,6 +48,7 @@ export interface OrganizePlan {
     description: string;
     files: string[];
   }>;
+  placements?: OrganizePlacement[];
   unclassified?: string[];
   stats?: OrganizePlanStats;
 }
@@ -103,9 +129,14 @@ export function parseOrganizePlan(text: string): OrganizePlan | null {
   const jsonMatch = text.match(/```(?:json|plan)?\n([\s\S]*?)```/);
   const raw = jsonMatch ? jsonMatch[1].trim() : text.trim();
   try {
-    const parsed = JSON.parse(raw);
-    if (parsed.categories && Array.isArray(parsed.categories)) {
-      return parsed as OrganizePlan;
+    const parsed = JSON.parse(raw) as Partial<OrganizePlan>;
+    const hasCategories = Array.isArray(parsed.categories);
+    const hasPlacements = Array.isArray(parsed.placements);
+    if (hasCategories || hasPlacements) {
+      return {
+        ...parsed,
+        categories: hasCategories ? parsed.categories! : [],
+      } as OrganizePlan;
     }
   } catch {
     /* not valid JSON */

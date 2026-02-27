@@ -51,4 +51,28 @@ describe("useTauriEvent", () => {
       expect(mockUnlisten).toHaveBeenCalled();
     });
   });
+
+  it("cleans up listener when listen resolves after unmount", async () => {
+    const handler = vi.fn();
+    let resolveListen: ((fn: () => void) => void) | undefined;
+    mockListen.mockImplementation(
+      () =>
+        new Promise<() => void>((resolve) => {
+          resolveListen = (fn: () => void) => resolve(fn);
+        }),
+    );
+
+    const delayedUnlisten = vi.fn();
+    const { unmount } = renderHook(() => useTauriEvent("test-event", handler));
+    unmount();
+
+    if (typeof resolveListen !== "function") {
+      throw new Error("listen resolver was not set");
+    }
+    resolveListen(delayedUnlisten);
+
+    await vi.waitFor(() => {
+      expect(delayedUnlisten).toHaveBeenCalledTimes(1);
+    });
+  });
 });
