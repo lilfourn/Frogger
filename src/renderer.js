@@ -1,22 +1,11 @@
 import './index.css';
 
 /**
- * Renderer scaffold for the file manager UI.
+ * Renderer for the file manager UI.
  *
- * Responsibility: build the static DOM shell and expose a stable set of
- * element references and helpers that the Wave 2 wiring task can use to
- * populate sidebar items, breadcrumbs, table rows, and status text.
- *
- * No IPC, no real data, no navigation logic here.
+ * Builds the static DOM shell, then wires it to `window.fileSystem` for
+ * navigation, listing, sorting, opening, and reveal-in-OS.
  */
-
-const PLACEHOLDER_LOCATIONS = [
-  { label: 'Home', path: '~' },
-  { label: 'Documents', path: '~/Documents' },
-  { label: 'Downloads', path: '~/Downloads' },
-  { label: 'Desktop', path: '~/Desktop' },
-  { label: 'Applications', path: '/Applications' },
-];
 
 function el(tag, props = {}, children = []) {
   const node = document.createElement(tag);
@@ -46,7 +35,6 @@ function buildSidebarItem({ label, path }) {
 function buildSidebar() {
   const locations = el('div', { id: 'sidebar-locations', class: 'sidebar-section' }, [
     el('div', { class: 'sidebar-section-title' }, 'Locations'),
-    ...PLACEHOLDER_LOCATIONS.map(buildSidebarItem),
   ]);
   const volumes = el('div', { id: 'sidebar-volumes', class: 'sidebar-section' }, [
     el('div', { class: 'sidebar-section-title' }, 'Volumes'),
@@ -77,10 +65,10 @@ function buildToolbar() {
 function buildFileList() {
   const thead = el('thead', {}, [
     el('tr', {}, [
-      el('th', { class: 'col-name', scope: 'col' }, 'Name'),
-      el('th', { class: 'col-kind', scope: 'col' }, 'Kind'),
-      el('th', { class: 'col-size', scope: 'col' }, 'Size'),
-      el('th', { class: 'col-date', scope: 'col' }, 'Date Modified'),
+      el('th', { class: 'col-name', scope: 'col', dataset: { sort: 'name' } }, 'Name'),
+      el('th', { class: 'col-kind', scope: 'col', dataset: { sort: 'kind' } }, 'Kind'),
+      el('th', { class: 'col-size', scope: 'col', dataset: { sort: 'size' } }, 'Size'),
+      el('th', { class: 'col-date', scope: 'col', dataset: { sort: 'modified' } }, 'Date Modified'),
     ]),
   ]);
   const tbody = el('tbody', { id: 'file-list-body' });
@@ -102,12 +90,20 @@ function buildStatusBar() {
   ]);
 }
 
+function buildContextMenu() {
+  return el('div', { id: 'context-menu', class: 'context-menu', hidden: true }, [
+    el('button', { type: 'button', class: 'context-menu-item', dataset: { action: 'open' } }, 'Open'),
+    el('button', { type: 'button', class: 'context-menu-item', dataset: { action: 'reveal' } }, 'Reveal in Finder'),
+  ]);
+}
+
 function render(root) {
   root.replaceChildren(
     buildSidebar(),
     buildToolbar(),
     buildFileList(),
     buildStatusBar(),
+    buildContextMenu(),
   );
 }
 
@@ -136,6 +132,134 @@ export const ui = {
   get emptyStateText() { return document.getElementById('empty-state-text'); },
   get errorState() { return document.getElementById('error-state'); },
   get errorStateText() { return document.getElementById('error-state-text'); },
+  get contextMenu() { return document.getElementById('context-menu'); },
 };
 
-export { el, buildSidebarItem };
+const state = {
+  history: [],
+  historyIndex: -1,
+  currentPath: null,
+  entries: [],
+  showHidden: false,
+  sort: { column: 'name', direction: 'asc' },
+  selectedPath: null,
+  contextTarget: null,
+};
+
+function formatSize(bytes) {
+  if (!Number.isFinite(bytes) || bytes < 0) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ['KB', 'MB', 'GB', 'TB'];
+  let v = bytes / 1024;
+  let i = 0;
+  while (v >= 1024 && i < units.length - 1) { v /= 1024; i += 1; }
+  return `${v < 10 ? v.toFixed(1) : Math.round(v)} ${units[i]}`;
+}
+
+function formatDate(ms) {
+  if (!Number.isFinite(ms)) return '';
+  try { return new Date(ms).toLocaleString(); } catch { return ''; }
+}
+
+function compareEntries(a, b) {
+  if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
+  const { column, direction } = state.sort;
+  const dir = direction === 'asc' ? 1 : -1;
+  let cmp = 0;
+  if (column === 'name') cmp = a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+  else if (column === 'kind') cmp = (a.kind || '').localeCompare(b.kind || '', undefined, { sensitivity: 'base' });
+  else if (column === 'size') cmp = (a.size || 0) - (b.size || 0);
+  else if (column === 'modified') cmp = (a.modifiedMs || 0) - (b.modifiedMs || 0);
+  if (cmp === 0) cmp = a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+  return cmp * dir;
+}
+
+function visibleEntries() {
+  const filtered = state.showHidden
+    ? state.entries
+    : state.entries.filter((e) => !e.isHidden);
+  return [...filtered].sort(compareEntries);
+}
+
+function renderSortIndicators() {
+  document.querySelectorAll('#file-list thead th').forEach((th) => {
+    th.classList.remove('is-sorted-asc', 'is-sorted-desc');
+    if (th.dataset.sort === state.sort.column) {
+      th.classList.add(state.sort.direction === 'asc' ? 'is-sorted-asc' : 'is-sorted-desc');
+    }
+  });
+}
+
+function renderBreadcrumbs(absPath) {
+  const bc = ui.breadcrumbs;
+  bc.replaceChildren();
+  const parts = [];
+  if (!absPath) {
+    return;
+  } else if (absPath.startsWith('/')) {
+    parts.push({ label: '/', path: '/' });
+    let acc = '';
+    for (const seg of absPath.split('/').filter(Boolean)) {
+      acc += '/' + seg;
+      parts.push({ label: seg, path: acc });
+    }
+  } else {
+    const segs = absPath.split(/[\\/]/).filter(Boolean);
+    let acc = '';
+    segs.forEach((seg, i) => {
+      acc = i === 0 ? seg + '\\' : acc + seg + '\\';
+      parts.push({ label: seg, path: acc });
+    });
+  }
+  parts.forEach((p, i) => {
+    if (i > 0) bc.appendChild(el('span', { class: 'breadcrumb-separator' }, '▸'));
+    bc.appendChild(el('button', {
+      type: 'button',
+      class: 'breadcrumb-item',
+      dataset: { path: p.path },
+    }, p.label));
+  });
+}
+
+function renderFileList() {
+  const tbody = ui.fileListBody;
+  tbody.replaceChildren();
+  const visible = visibleEntries();
+  for (const entry of visible) {
+    const tr = el('tr', { dataset: { path: entry.path, isDir: entry.isDirectory ? '1' : '0' } }, [
+      el('td', { class: 'col-name' }, entry.name),
+      el('td', { class: 'col-kind' }, entry.kind || (entry.isDirectory ? 'Folder' : 'File')),
+      el('td', { class: 'col-size' }, entry.isDirectory ? '—' : formatSize(entry.size)),
+      el('td', { class: 'col-date' }, formatDate(entry.modifiedMs)),
+    ]);
+    if (entry.path === state.selectedPath) tr.classList.add('is-selected');
+    tbody.appendChild(tr);
+  }
+  ui.errorState.hidden = true;
+  ui.emptyState.hidden = visible.length > 0;
+
+  const total = state.entries.length;
+  const word = visible.length === 1 ? 'item' : 'items';
+  let text = `${visible.length} ${word}`;
+  if (!state.showHidden && total !== visible.length) text += `, ${total} total`;
+  ui.statusText.textContent = text;
+}
+
+function renderError(message) {
+  ui.fileListBody.replaceChildren();
+  ui.emptyState.hidden = true;
+  ui.errorState.hidden = false;
+  ui.errorStateText.textContent = message || 'Unable to read directory';
+  ui.statusText.textContent = '';
+}
+
+function renderNavButtons() {
+  ui.navBack.disabled = state.historyIndex <= 0;
+  ui.navForward.disabled = state.historyIndex >= state.history.length - 1;
+}
+
+function renderSidebarSelection() {
+  document.querySelectorAll('.sidebar-item').forEach((b) => {
+    b.classList.toggle('is-selected', b.dataset.path === state.currentPath);
+  });
+}
