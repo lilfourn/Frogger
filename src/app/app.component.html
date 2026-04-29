@@ -1,21 +1,423 @@
-<main class="container">
-  <h1>Welcome to Tauri + Angular!</h1>
+@if (loading()) {
+  <main class="bootstrap-shell">
+    <section class="bootstrap-card" aria-live="polite">
+      <div class="spinner" aria-hidden="true"></div>
+      <h1>Preparing file manager</h1>
+      <p>Loading local state, settings, and filesystem access.</p>
+    </section>
+  </main>
+} @else if (errorMessage()) {
+  <main class="bootstrap-shell">
+    <section class="bootstrap-card bootstrap-card--error" aria-live="assertive">
+      <div class="status-dot status-dot--error" aria-hidden="true"></div>
+      <h1>File manager unavailable</h1>
+      <p>{{ errorMessage() }}</p>
+      <button type="button" class="pill-button" (click)="retryBootstrap()">Retry</button>
+    </section>
+  </main>
+} @else if (bootstrap(); as state) {
+  @if (state.access.status === "denied") {
+    <main class="bootstrap-shell">
+      <section class="bootstrap-card bootstrap-card--wide" aria-live="polite">
+        <div class="status-dot status-dot--warning" aria-hidden="true"></div>
+        <h1>File access required</h1>
+        <p>{{ state.access.message }}</p>
+        <p class="muted">{{ state.access.recoveryHint }}</p>
+        <button type="button" class="pill-button" (click)="retryBootstrap()">Retry access</button>
+      </section>
+    </main>
+  } @else {
+    <main
+      class="finder-shell"
+      [class.finder-shell--sidebar-collapsed]="sidebarCollapsed()"
+      [style.--sidebar-width]="sidebarWidth() + 'px'"
+    >
+      <aside class="sidebar" aria-label="Sidebar">
+        <div class="sidebar-drag-region" aria-hidden="true"></div>
 
-  <div class="row">
-    <a href="https://tauri.app" target="_blank">
-      <img src="/assets/tauri.svg" class="logo tauri" alt="Tauri logo" />
-    </a>
-    <a href="https://angular.io" target="_blank">
-      <img src="/assets/angular.svg" class="logo angular" alt="Angular logo" />
-    </a>
-  </div>
-  <p>Click on the logos to learn more about the frameworks</p>
+        @if (!sidebarCollapsed()) {
+          @if (sidebarSectionVisible(state, 'recents')) {
+            <section class="sidebar-section sidebar-section--primary">
+              <h2>Recents</h2>
+              @for (recent of recentSidebarItems(state); track recent.path) {
+                <button
+                  type="button"
+                  class="sidebar-item"
+                  [class.sidebar-item--active]="isActivePath(recent.path)"
+                  [attr.aria-current]="isActivePath(recent.path) ? 'page' : null"
+                  (click)="openSidebarPath(recent.path, recent.label)"
+                >
+                  <span class="app-icon app-icon--sidebar {{ recent.icon }}" aria-hidden="true"></span>
+                  <span>{{ recent.label }}</span>
+                </button>
+              }
+            </section>
+          }
 
-  <form class="row" (submit)="greet($event, greetInput.value)">
-    <input #greetInput id="greet-input" placeholder="Enter a name..." />
-    <button type="submit">Greet</button>
-  </form>
-  <p>{{ greetingMessage }}</p>
+          @if (sidebarSectionVisible(state, 'favorites')) {
+            <section class="sidebar-section">
+              <h2>Favorites</h2>
+              @for (favorite of favoriteSidebarItems(state); track favorite.path) {
+                <button
+                  type="button"
+                  class="sidebar-item"
+                  [class.sidebar-item--active]="isActivePath(favorite.path)"
+                  [attr.aria-current]="isActivePath(favorite.path) ? 'page' : null"
+                  (click)="openSidebarPath(favorite.path, favorite.label)"
+                >
+                  <span class="app-icon app-icon--sidebar {{ favorite.icon }}" aria-hidden="true"></span>
+                  <span>{{ favorite.label }}</span>
+                </button>
+              }
+            </section>
+          }
 
-  <router-outlet />
-</main>
+          @if (sidebarSectionVisible(state, 'locations')) {
+            <section class="sidebar-section">
+              <h2>Locations</h2>
+              @for (location of locationSidebarItems(state); track location.path) {
+                <button
+                  type="button"
+                  class="sidebar-item"
+                  [class.sidebar-item--active]="isActivePath(location.path)"
+                  [attr.aria-current]="isActivePath(location.path) ? 'page' : null"
+                  (click)="openSidebarPath(location.path, location.label)"
+                >
+                  <span class="app-icon app-icon--sidebar {{ location.icon }}" aria-hidden="true"></span>
+                  <span>{{ location.label }}</span>
+                </button>
+              }
+            </section>
+          }
+        } @else {
+          <button type="button" class="sidebar-reveal" aria-label="Show sidebar" (click)="toggleSidebar()">
+            <span class="app-icon app-icon--sidebar-reveal icon-sidebar-reveal" aria-hidden="true"></span>
+          </button>
+        }
+
+        @if (!sidebarCollapsed()) {
+          <div
+            class="sidebar-resize-handle"
+            role="separator"
+            aria-label="Resize sidebar"
+            aria-orientation="vertical"
+            (pointerdown)="startSidebarResize($event)"
+          ></div>
+        }
+      </aside>
+
+      <section class="workspace" aria-label="File manager workspace">
+        <header class="toolbar" aria-label="Toolbar">
+          <div class="toolbar-left">
+            <div class="segmented-control segmented-control--nav" aria-label="Navigation">
+              <button type="button" class="icon-button" disabled aria-label="Back">
+                <span class="app-icon app-icon--toolbar icon-back" aria-hidden="true"></span>
+              </button>
+              <span class="control-divider" aria-hidden="true"></span>
+              <button type="button" class="icon-button" disabled aria-label="Forward">
+                <span class="app-icon app-icon--toolbar icon-forward" aria-hidden="true"></span>
+              </button>
+            </div>
+
+            <h1 class="toolbar-title" aria-live="polite">{{ folderName(session.activeTab()?.path) }}</h1>
+          </div>
+
+          <div class="toolbar-center">
+            <div class="segmented-control view-switcher" aria-label="View mode">
+              @for (viewMode of viewModes; track viewMode.id) {
+                <button
+                  type="button"
+                  class="icon-button icon-button--view"
+                  [class.icon-button--active]="session.activeTab()?.folderState?.viewMode === viewMode.id"
+                  [attr.aria-label]="viewMode.label"
+                  [attr.aria-pressed]="session.activeTab()?.folderState?.viewMode === viewMode.id"
+                  (click)="setViewMode(viewMode.id)"
+                >
+                  <span class="app-icon app-icon--toolbar {{ viewMode.icon }}" aria-hidden="true"></span>
+                </button>
+              }
+            </div>
+
+            <div class="segmented-control toolbar-actions" aria-label="File actions">
+              <button type="button" class="icon-button" disabled title="Move to Trash coming soon" aria-label="Move to Trash coming soon">
+                <span class="app-icon app-icon--toolbar icon-trash" aria-hidden="true"></span>
+              </button>
+              <button type="button" class="icon-button" disabled title="New Folder coming soon" aria-label="New Folder coming soon">
+                <span class="app-icon app-icon--toolbar icon-new-folder" aria-hidden="true"></span>
+              </button>
+              <button
+                type="button"
+                class="icon-button"
+                [class.icon-button--active]="favoriteTargetPinned()"
+                [disabled]="!favoriteTargetPath()"
+                [attr.aria-label]="favoriteTargetPinned() ? 'Unpin from Favorites' : 'Pin to Favorites'"
+                (click)="toggleFavoriteTarget()"
+              >
+                {{ favoriteTargetPinned() ? "★" : "☆" }}
+              </button>
+              <button type="button" class="icon-button icon-button--ai" disabled title="AI search coming soon" aria-label="AI search coming soon">
+                <span class="app-icon app-icon--toolbar icon-ai-search" aria-hidden="true"></span>
+              </button>
+            </div>
+
+            <div class="sort-control" aria-label="Sort files">
+              <select [value]="currentSortKey()" (change)="setSortKey($any($event.target).value)" aria-label="Sort by">
+                <option value="name">Name</option>
+                <option value="dateModified">Date Modified</option>
+                <option value="size">Size</option>
+                <option value="kind">Kind</option>
+                <option value="path">Path</option>
+              </select>
+              <button type="button" class="sort-direction-button" [attr.aria-label]="'Sort direction: ' + sortLabel()" (click)="toggleSortDirection()">
+                {{ currentSortDirection() === 'asc' ? '↑' : '↓' }}
+              </button>
+            </div>
+          </div>
+
+          <label class="search-field">
+            <span class="app-icon app-icon--search icon-search" aria-hidden="true"></span>
+            <input type="search" [placeholder]="searchPlaceholder(state)" [disabled]="!state.indexing.hasInitialIndex" />
+          </label>
+        </header>
+
+        @if (session.activeWindow(); as window) {
+          @if (window.tabs.length > 1) {
+            <nav class="tab-strip" aria-label="Open tabs">
+              @for (tab of window.tabs; track tab.id) {
+                <button
+                  type="button"
+                  class="tab-button"
+                  [class.tab-button--active]="tab.id === window.activeTabId"
+                  [attr.aria-current]="tab.id === window.activeTabId ? 'page' : null"
+                  (click)="switchTab(tab.id)"
+                >
+                  {{ tab.title }}
+                </button>
+              }
+              <button type="button" class="tab-add-button" aria-label="Open Home in a new tab" (click)="openHomeTab()">
+                <span class="app-icon app-icon--tab-add icon-tab-add" aria-hidden="true"></span>
+              </button>
+            </nav>
+          }
+        }
+
+        <section
+          class="file-stage"
+          [class.file-stage--full]="session.activeTab()?.folderState?.viewMode !== 'list'"
+          aria-label="Current folder"
+        >
+          @if (session.activeTab()?.folderState?.viewMode === 'list') {
+            <div class="file-list-header" role="row" [style.grid-template-columns]="listGridTemplate()">
+              @for (column of listColumns(); track column.id) {
+                <button
+                  type="button"
+                  class="column-header"
+                  [class.column-header--name]="column.id === 'name'"
+                  [class.column-header--sorted]="session.activeTab()?.folderState?.sort?.key === column.sortKey"
+                  [attr.data-column-id]="column.id"
+                  (click)="sortBy(column)"
+                >
+                  <span>{{ column.label }} {{ sortIndicator(column) }}</span>
+                  <span
+                    class="column-resizer"
+                    role="separator"
+                    aria-orientation="vertical"
+                    aria-label="Resize column"
+                    (pointerdown)="startColumnResize($event, column.id)"
+                  ></span>
+                </button>
+              }
+            </div>
+          }
+
+          @if (listingLoading()) {
+            <div class="file-list-placeholder" aria-label="Directory listing placeholder">
+              @for (row of placeholderRows; track row) {
+                <div class="placeholder-row" [class.placeholder-row--short]="row % 6 === 0"></div>
+              }
+            </div>
+          } @else if (listingError()) {
+            <div class="file-list-state" role="status">
+              <strong>Folder unavailable</strong>
+              <span>{{ listingError() }}</span>
+              @if (listingErrorDetails(); as details) {
+                <span class="file-list-state__details">{{ details }}</span>
+              }
+              <button type="button" class="pill-button" (click)="retryDirectoryListing()">Retry</button>
+            </div>
+          } @else if (directoryListing(); as listing) {
+            @if (listing.entries.length === 0) {
+              <div class="file-list-state" role="status">
+                <strong>This folder is empty</strong>
+                <span>No visible items are available in {{ folderName(listing.path) }}.</span>
+              </div>
+            } @else {
+              @switch (session.activeTab()?.folderState?.viewMode) {
+                @case ('grid') {
+                  <div class="grid-view" role="grid" aria-label="Icon view">
+                    @for (entry of listing.entries; track entry.path) {
+                      <button
+                        type="button"
+                        class="grid-item"
+                        [class.grid-item--selected]="selectedPath() === entry.path"
+                        [class.entry--broken]="entry.symlinkBroken"
+                        [attr.title]="symlinkTooltip(entry)"
+                        (click)="selectEntry(entry)"
+                        (dblclick)="openEntry(entry)"
+                      >
+                        @if (thumbnailSrc(entry); as thumb) {
+                          <img class="grid-thumbnail" [src]="thumb" alt="" />
+                        } @else {
+                          <span class="grid-glyph file-glyph" [class.file-glyph--folder]="entry.isDir" [class.file-glyph--alias]="entry.isSymlink" aria-hidden="true"></span>
+                        }
+                        <span>{{ entry.displayName }}</span>
+                        @if (entry.symlinkBroken) {
+                          <span class="alias-badge alias-badge--broken" aria-label="Broken alias">⚠</span>
+                        } @else if (entry.isSymlink) {
+                          <span class="alias-badge" aria-label="Alias">↪</span>
+                        }
+                      </button>
+                    }
+                  </div>
+                }
+                @case ('column') {
+                  <div class="column-view" aria-label="Column view">
+                    @for (column of columnListings(); track column.path; let columnIndex = $index) {
+                      <div class="browser-column" role="listbox" [attr.aria-label]="folderName(column.path)">
+                        @for (entry of column.entries; track entry.path) {
+                          <button
+                            type="button"
+                            class="column-row"
+                            [class.column-row--selected]="selectedPath() === entry.path"
+                            [class.entry--broken]="entry.symlinkBroken"
+                            [attr.title]="symlinkTooltip(entry)"
+                            (click)="selectColumnEntry(entry, columnIndex)"
+                            (dblclick)="openEntry(entry)"
+                          >
+                            <span class="file-glyph" [class.file-glyph--folder]="entry.isDir" [class.file-glyph--alias]="entry.isSymlink" aria-hidden="true"></span>
+                            <span>{{ entry.displayName }}</span>
+                            @if (entry.symlinkBroken) {
+                              <span class="alias-badge alias-badge--broken" aria-label="Broken alias">⚠</span>
+                            } @else if (entry.isSymlink) {
+                              <span class="alias-badge" aria-label="Alias">↪</span>
+                            }
+                            @if (entry.isDir) {
+                              <span class="column-disclosure" aria-hidden="true">›</span>
+                            }
+                          </button>
+                        }
+                        @if (columnLoadingPath()) {
+                          <div class="column-loading">Loading…</div>
+                        }
+                      </div>
+                    }
+                  </div>
+                }
+                @case ('gallery') {
+                  <div class="gallery-view" aria-label="Gallery view">
+                    <section class="gallery-preview" aria-label="Selected item preview">
+                      @if (galleryPreviewEntry(); as preview) {
+                        @if (thumbnailSrc(preview); as thumb) {
+                          <img class="gallery-thumbnail" [src]="thumb" alt="" />
+                        } @else {
+                          <span class="gallery-glyph file-glyph" [class.file-glyph--folder]="preview.isDir" aria-hidden="true"></span>
+                        }
+                        <h2>{{ preview.displayName }}</h2>
+                        <p>{{ preview.kind }} · {{ fileSizeLabel(preview) }} · {{ dateLabel(preview.modifiedAt) }}</p>
+                      }
+                    </section>
+                    <div class="gallery-strip" aria-label="Gallery strip">
+                      @for (entry of listing.entries; track entry.path) {
+                        <button
+                          type="button"
+                          class="strip-item"
+                          [class.strip-item--selected]="selectedPath() === entry.path"
+                          [class.entry--broken]="entry.symlinkBroken"
+                          [attr.title]="symlinkTooltip(entry)"
+                          (click)="selectEntry(entry)"
+                          (dblclick)="openEntry(entry)"
+                        >
+                          @if (thumbnailSrc(entry); as thumb) {
+                            <img class="strip-thumbnail" [src]="thumb" alt="" />
+                          } @else {
+                            <span class="file-glyph" [class.file-glyph--folder]="entry.isDir" [class.file-glyph--alias]="entry.isSymlink" aria-hidden="true"></span>
+                          }
+                          <span>{{ entry.displayName }}</span>
+                          @if (entry.symlinkBroken) {
+                            <span class="alias-badge alias-badge--broken" aria-label="Broken alias">⚠</span>
+                          } @else if (entry.isSymlink) {
+                            <span class="alias-badge" aria-label="Alias">↪</span>
+                          }
+                        </button>
+                      }
+                    </div>
+                  </div>
+                }
+                @default {
+                  <cdk-virtual-scroll-viewport [itemSize]="32" [minBufferPx]="640" [maxBufferPx]="1280" class="file-list-viewport">
+                    <button
+                      *cdkVirtualFor="let entry of listing.entries; trackBy: trackEntry"
+                      type="button"
+                      class="file-row"
+                      role="row"
+                      [class.file-row--selected]="selectedPath() === entry.path"
+                      [class.entry--broken]="entry.symlinkBroken"
+                      [attr.title]="symlinkTooltip(entry)"
+                      [style.grid-template-columns]="listGridTemplate()"
+                      (click)="selectEntry(entry)"
+                      (dblclick)="openEntry(entry)"
+                    >
+                      <span class="file-cell file-cell--name" role="gridcell">
+                        <span class="file-glyph" [class.file-glyph--folder]="entry.isDir" [class.file-glyph--alias]="entry.isSymlink" aria-hidden="true"></span>
+                        <span class="file-name">{{ entry.displayName }}</span>
+                        @if (entry.symlinkBroken) {
+                          <span class="alias-badge alias-badge--broken" aria-label="Broken alias">⚠</span>
+                        } @else if (entry.isSymlink) {
+                          <span class="alias-badge" aria-label="Alias">↪</span>
+                        }
+                      </span>
+                      @if (columnVisible('size')) {
+                        <span class="file-cell file-cell--size" role="gridcell">{{ fileSizeLabel(entry) }}</span>
+                      }
+                      @if (columnVisible('kind')) {
+                        <span class="file-cell" role="gridcell">{{ entry.kind }}</span>
+                      }
+                      @if (columnVisible('dateModified')) {
+                        <span class="file-cell" role="gridcell">{{ dateLabel(entry.modifiedAt) }}</span>
+                      }
+                    </button>
+                  </cdk-virtual-scroll-viewport>
+                }
+              }
+            }
+          }
+        </section>
+
+        <footer class="bottom-bar" aria-label="Path and status">
+          @if (state.settings.pathBarVisible) {
+            <nav class="breadcrumbs" aria-label="Path breadcrumbs">
+              @for (crumb of breadcrumbs(); track crumb.path) {
+                <button type="button" class="breadcrumb" (click)="navigateToBreadcrumb(crumb.path)">
+                  @if ($first) {
+                    <span class="app-icon app-icon--breadcrumb icon-breadcrumb-disk" aria-hidden="true"></span>
+                  }
+                  {{ crumb.label }}
+                </button>
+                @if (!$last) {
+                  <span class="breadcrumb-separator" aria-hidden="true">›</span>
+                }
+              }
+            </nav>
+          }
+
+          <button type="button" class="status-pill" aria-label="Activity status">
+            @if (!state.indexing.hasInitialIndex) {
+              <span class="status-spinner" aria-hidden="true"></span>
+            }
+            <span>{{ statusLabel(state) }}</span>
+          </button>
+        </footer>
+      </section>
+    </main>
+  }
+}

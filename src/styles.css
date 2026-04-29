@@ -1,1 +1,99 @@
-/* You can add global styles to this file, and also import other style files */
+:root {
+  color-scheme: light dark;
+  font-family:
+    ui-sans-serif,
+    -apple-system,
+    BlinkMacSystemFont,
+    "SF Pro Text",
+    "Segoe UI",
+    sans-serif;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 1.4;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  --bg-primary: #eceef2;
+  --bg-elevated: #f8f9fb;
+  --chrome-bg: rgba(237, 239, 243, 0.82);
+  --sidebar-bg: rgba(229, 233, 239, 0.72);
+  --toolbar-bg: rgba(248, 249, 251, 0.86);
+  --workspace-bg: #fbfbfc;
+  --surface-primary: rgba(255, 255, 255, 0.82);
+  --search-bg: rgba(255, 255, 255, 0.68);
+  --selection-bg: rgba(37, 99, 235, 0.12);
+  --row-line: rgba(15, 23, 42, 0.045);
+  --fg-primary: #111827;
+  --fg-secondary: #4b5563;
+  --fg-tertiary: #6b7280;
+  --border-subtle: rgba(15, 23, 42, 0.1);
+  --border-strong: rgba(15, 23, 42, 0.18);
+  --control-bg: rgba(255, 255, 255, 0.62);
+  --control-bg-hover: rgba(255, 255, 255, 0.94);
+  --accent: #2563eb;
+  --accent-strong: #1d4ed8;
+  --success: #16a34a;
+  --warning: #f59e0b;
+  --danger: #dc2626;
+  --danger-border: rgba(220, 38, 38, 0.28);
+  background: var(--bg-primary);
+  color: var(--fg-primary);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  min-width: 320px;
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  min-height: 100vh;
+  overflow: hidden;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button:focus-visible,
+input:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 72%, white 28%);
+  outline-offset: 2px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg-primary: #101217;
+    --bg-elevated: #181b22;
+    --chrome-bg: rgba(28, 31, 39, 0.86);
+    --sidebar-bg: rgba(25, 29, 37, 0.78);
+    --toolbar-bg: rgba(28, 32, 40, 0.88);
+    --workspace-bg: #151820;
+    --surface-primary: rgba(30, 34, 43, 0.84);
+    --search-bg: rgba(11, 14, 20, 0.5);
+    --selection-bg: rgba(96, 165, 250, 0.16);
+    --row-line: rgba(226, 232, 240, 0.045);
+    --fg-primary: #f8fafc;
+    --fg-secondary: #cbd5e1;
+    --fg-tertiary: #94a3b8;
+    --border-subtle: rgba(226, 232, 240, 0.1);
+    --border-strong: rgba(226, 232, 240, 0.18);
+    --control-bg: rgba(51, 57, 70, 0.58);
+    --control-bg-hover: rgba(64, 72, 88, 0.94);
+    --accent: #60a5fa;
+    --accent-strong: #93c5fd;
+    --success: #22c55e;
+    --warning: #fbbf24;
+    --danger: #f87171;
+    --danger-border: rgba(248, 113, 113, 0.32);
+  }
+}

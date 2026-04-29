@@ -62,3 +62,5 @@ node_modules/
 *.sw?
 # OS specific
 
+# CocoIndex Code (ccc)
+/.cocoindex_code/

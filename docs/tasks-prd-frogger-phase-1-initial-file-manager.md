@@ -82,16 +82,16 @@ Prepare the starter app for Frogger implementation with correct app metadata, re
 - Keep main UI branding out of Angular templates and styles.
 
 ### Acceptance Criteria
-- [ ] App metadata/menu name is Frogger while the main shell does not show brand-first dashboard content.
-- [ ] Required frontend and backend dependencies are declared and install/build cleanly.
-- [ ] A documented test command exists for Angular, Rust, and full app build verification.
-- [ ] Out-of-scope controls such as Share, Tags, Grouping, and permanent delete are not introduced.
+- [x] App metadata/menu name is Frogger while the main shell does not show brand-first dashboard content.
+- [x] Required frontend and backend dependencies are declared and install/build cleanly.
+- [x] A documented test command exists for Angular, Rust, and full app build verification.
+- [x] Out-of-scope controls such as Share, Tags, Grouping, and permanent delete are not introduced.
 
 ### Verification
-- [ ] Run `bun install` or the project package manager equivalent successfully.
-- [ ] Run `bun run build` successfully.
-- [ ] Run `cd src-tauri && cargo test` successfully.
-- [ ] Inspect app config to confirm Frogger appears only in app/system metadata.
+- [x] Run `bun install` or the project package manager equivalent successfully.
+- [x] Run `bun run build` successfully.
+- [x] Run `cd src-tauri && cargo test` successfully.
+- [x] Inspect app config to confirm Frogger appears only in app/system metadata.
 
 ## Task 2: Implement SQLite persistence schema and migration layer
 Priority: P0
@@ -110,13 +110,13 @@ Create the durable data foundation for session restoration, settings, recents, m
 - Include migration versioning and deterministic migration tests.
 
 ### Acceptance Criteria
-- [ ] Fresh launch creates the database in the app data directory.
-- [ ] Repeated launches do not corrupt or duplicate migration state.
-- [ ] Database tables cover every persisted Phase 1 state category.
-- [ ] Migrations are idempotent and versioned.
+- [x] Fresh launch creates the database in the app data directory.
+- [x] Repeated launches do not corrupt or duplicate migration state.
+- [x] Database tables cover every persisted Phase 1 state category.
+- [x] Migrations are idempotent and versioned.
 
 ### Verification
-- [ ] Add and pass Rust tests for fresh migration, repeated migration, and sample insert/read for settings, tabs, and metadata rows.
+- [x] Add and pass Rust tests for fresh migration, repeated migration, and sample insert/read for settings, tabs, and metadata rows.
 - [ ] Manually inspect the created SQLite schema during a dev run.
 - [ ] Run a clean-profile launch and confirm no persistence errors appear.
 
@@ -137,13 +137,13 @@ Create stable interfaces between Angular and Rust before implementing each featu
 - Normalize error shape so permission, missing path, conflict, and operation failures render consistently.
 
 ### Acceptance Criteria
-- [ ] Angular can call a bootstrap command and receive typed initial state.
-- [ ] Rust command errors serialize into a stable frontend error model.
-- [ ] Events can be subscribed to and unsubscribed from without leaks.
-- [ ] DTOs include enough data for List view, search results, previews, and status UI.
+- [x] Angular can call a bootstrap command and receive typed initial state.
+- [x] Rust command errors serialize into a stable frontend error model.
+- [x] Events can be subscribed to and unsubscribed from without leaks.
+- [x] DTOs include enough data for List view, search results, previews, and status UI.
 
 ### Verification
-- [ ] Add Rust unit tests for DTO serialization of representative payloads.
+- [x] Add Rust unit tests for DTO serialization of representative payloads.
 - [ ] Add Angular service tests with mocked Tauri invoke/listen APIs.
 - [ ] Run the app and confirm bootstrap data renders in a temporary diagnostic-free shell state.
 
@@ -164,13 +164,13 @@ Ensure first-time users are immediately put into a usable Home browsing flow or 
 - Avoid onboarding screens, branded dashboards, or multi-step setup.
 
 ### Acceptance Criteria
-- [ ] First-ever permitted launch opens Home in a large centered window with expected defaults.
-- [ ] Denied or unavailable access shows a clear empty state with recovery instructions.
-- [ ] Retry after permission approval loads the file manager UI immediately.
-- [ ] No search, fake sidebar content, or broken directory list appears while access is denied.
+- [x] First-ever permitted launch opens Home in a large centered window with expected defaults.
+- [x] Denied or unavailable access shows a clear empty state with recovery instructions.
+- [x] Retry after permission approval loads the file manager UI immediately.
+- [x] No search, fake sidebar content, or broken directory list appears while access is denied.
 
 ### Verification
-- [ ] Add Rust tests for Home path resolution and access-check error classification.
+- [x] Add Rust tests for Home path resolution and access-check error classification.
 - [ ] Add Angular component tests for denied-access empty state and retry behavior.
 - [ ] Manually test a clean app profile with allowed and denied access paths.
 
@@ -213,14 +213,14 @@ Restore the user's previous workspace exactly enough to feel stable across resta
 - Persist session changes on meaningful state transitions and on close.
 
 ### Acceptance Criteria
-- [ ] Relaunch restores all valid windows and tabs.
+- [x] Relaunch restores all valid windows and tabs.
 - [ ] Active tab, selected item, scroll position, view mode, sort, sidebar width, and geometry are restored.
-- [ ] Unavailable tabs are dropped without blocking launch.
-- [ ] Home opens when all restored tabs are invalid.
-- [ ] Active search is not restored.
+- [x] Unavailable tabs are dropped without blocking launch.
+- [x] Home opens when all restored tabs are invalid.
+- [x] Active search is not restored.
 
 ### Verification
-- [ ] Add Rust tests for restore fallback and invalid-tab pruning.
+- [x] Add Rust tests for restore fallback and invalid-tab pruning.
 - [ ] Add Angular state tests for applying restored active tab and folder state.
 - [ ] Manually open multiple tabs/windows, change state, quit, relaunch, and compare restored state.
 
@@ -241,13 +241,13 @@ Support practical file-manager workspaces with multiple windows and tabs.
 
 ### Acceptance Criteria
 - [ ] Users can open folders in new tabs, close tabs, and switch tabs.
-- [ ] Users can open multiple file-manager windows.
-- [ ] Each window restores its own tabs after restart.
-- [ ] Closing a tab never leaves a window without a valid fallback tab.
+- [x] Users can open multiple file-manager windows.
+- [x] Each window restores its own tabs after restart.
+- [x] Closing a tab never leaves a window without a valid fallback tab.
 
 ### Verification
 - [ ] Add frontend state tests for tab open/close/switch behavior.
-- [ ] Add backend tests for persisted per-window tab groups.
+- [x] Add backend tests for persisted per-window tab groups.
 - [ ] Manually verify two windows with distinct active tabs restore correctly.
 
 ## Task 7: Implement Finder-style shell layout, toolbar, and bottom bars
@@ -267,16 +267,16 @@ Create the core visual and interaction frame that replaces the starter experienc
 - Bottom-right status shows item count or selected count when idle.
 
 ### Acceptance Criteria
-- [ ] The UI structurally matches a Finder-like file manager rather than an Angular starter page.
-- [ ] Toolbar controls match Phase 1 scope exactly.
-- [ ] Back/Forward are visible and disabled until history exists.
-- [ ] Folder title displays only the current folder name.
-- [ ] Bottom path/status bar is visible and useful.
+- [x] The UI structurally matches a Finder-like file manager rather than an Angular starter page.
+- [x] Toolbar controls match Phase 1 scope exactly.
+- [x] Back/Forward are visible and disabled until history exists.
+- [x] Folder title displays only the current folder name.
+- [x] Bottom path/status bar is visible and useful.
 
 ### Verification
 - [ ] Add Angular component tests for toolbar control presence and disabled states.
 - [ ] Manually compare first-open structure against the PRD screenshot intent.
-- [ ] Verify settings are not exposed as a toolbar gear.
+- [x] Verify settings are not exposed as a toolbar gear.
 
 ## Task 8: Implement sidebar sections, Locations, Favorites, and Recents
 Priority: P0
@@ -296,14 +296,14 @@ Provide a familiar, persistent Finder-style sidebar with real behavior and no fa
 - Keep Tags hidden until real tag support exists.
 
 ### Acceptance Criteria
-- [ ] Recents appears first and only contains app-opened items.
-- [ ] Favorites can pin and unpin folders.
-- [ ] Locations includes mounted drives and detected common cloud folders when present.
-- [ ] Sidebar sections can be hidden/shown and the choices persist.
-- [ ] Sidebar collapse and width persist across restarts.
+- [x] Recents appears first and only contains app-opened items.
+- [x] Favorites can pin and unpin folders.
+- [x] Locations includes mounted drives and detected common cloud folders when present.
+- [x] Sidebar sections can be hidden/shown and the choices persist.
+- [x] Sidebar collapse and width persist across restarts.
 
 ### Verification
-- [ ] Add backend tests for recents insertion and descending sort.
+- [x] Add backend tests for recents insertion and descending sort.
 - [ ] Add Angular tests for sidebar section rendering and persistence calls.
 - [ ] Manually open files/folders and confirm Recents updates without including unrelated OS history.
 
@@ -324,15 +324,15 @@ List real filesystem directories quickly and safely with all metadata needed for
 - Return permission and missing-path errors with recoverable error codes.
 
 ### Acceptance Criteria
-- [ ] Home and regular folders list real entries with complete visible metadata.
-- [ ] Hidden files are excluded when the setting is off.
-- [ ] Excluded dependency/build/cache folders remain visible in browsing.
-- [ ] Large directories can be listed progressively or through a virtualization-friendly contract.
-- [ ] Permission and missing-path errors show recoverable UI states.
+- [x] Home and regular folders list real entries with complete visible metadata.
+- [x] Hidden files are excluded when the setting is off.
+- [x] Excluded dependency/build/cache folders remain visible in browsing.
+- [x] Large directories can be listed progressively or through a virtualization-friendly contract.
+- [x] Permission and missing-path errors show recoverable UI states.
 
 ### Verification
-- [ ] Add Rust tests using temporary directories for files, folders, hidden files, permissions where practical, and excluded folder names.
-- [ ] Add command integration tests for error serialization.
+- [x] Add Rust tests using temporary directories for files, folders, hidden files, permissions where practical, and excluded folder names.
+- [x] Add command integration tests for error serialization.
 - [ ] Manually browse Home, an empty folder, and a large folder.
 
 ## Task 10: Build the fully functional virtualized List view
@@ -353,12 +353,12 @@ Deliver the primary Phase 1 browsing experience with high performance and reliab
 - Restore selected item and scroll offset when possible.
 
 ### Acceptance Criteria
-- [ ] Directories render as a complete List view with expected columns.
-- [ ] Tens of thousands of entries remain responsive through virtualization.
-- [ ] Skeleton placeholders appear while loading.
-- [ ] Double-clicking folders opens in the same window.
-- [ ] Double-clicking files opens with the default system app and records Recents.
-- [ ] Item count and selected count update in the bottom-right status.
+- [x] Directories render as a complete List view with expected columns.
+- [x] Tens of thousands of entries remain responsive through virtualization.
+- [x] Skeleton placeholders appear while loading.
+- [x] Double-clicking folders opens in the same window.
+- [x] Double-clicking files opens with the default system app and records Recents.
+- [x] Item count and selected count update in the bottom-right status.
 
 ### Verification
 - [ ] Add Angular component tests for rows, columns, selection, double-click actions, and skeleton state.
@@ -382,15 +382,15 @@ Make folder presentation configurable and persistent while keeping defaults Find
 - Hide file extensions by default while retaining full names for operations and copy path.
 
 ### Acceptance Criteria
-- [ ] Folders sort before files by default.
-- [ ] Users can change sort and the folder remembers it.
-- [ ] Hidden-file visibility persists.
-- [ ] File-extension visibility persists and changes display without corrupting operations.
-- [ ] Column visibility and widths persist globally.
+- [x] Folders sort before files by default.
+- [x] Users can change sort and the folder remembers it.
+- [x] Hidden-file visibility persists.
+- [x] File-extension visibility persists and changes display without corrupting operations.
+- [x] Column visibility and widths persist globally.
 
 ### Verification
 - [ ] Add Angular tests for sort order, folders-first toggle, hidden-file toggle, extension display, and column resizing.
-- [ ] Add persistence tests for folder sort and global column settings.
+- [x] Add persistence tests for folder sort and global column settings.
 - [ ] Manually relaunch and confirm changed display settings remain applied.
 
 ## USER-TEST Checkpoint 2: Finder shell, restore, sidebar, and List browsing
@@ -434,10 +434,10 @@ Make view switching real across all Phase 1 view modes while keeping List view p
 - Persist view mode per folder.
 
 ### Acceptance Criteria
-- [ ] Toolbar view switcher changes between List, Grid/Icon, Column, and Gallery.
-- [ ] All views can browse folders and select/open files.
-- [ ] Gallery has a large preview area and horizontal strip.
-- [ ] View mode persists per folder.
+- [x] Toolbar view switcher changes between List, Grid/Icon, Column, and Gallery.
+- [x] All views can browse folders and select/open files.
+- [x] Gallery has a large preview area and horizontal strip.
+- [x] View mode persists per folder.
 - [ ] Search results continue to force List view.
 
 ### Verification
@@ -462,14 +462,14 @@ Provide faster visual browsing with cacheable thumbnails that do not bloat the m
 - Add cleanup for orphaned and stale thumbnail entries.
 
 ### Acceptance Criteria
-- [ ] Image thumbnails appear in Grid and Gallery where available.
-- [ ] Reopening a folder uses cached thumbnails when source metadata is unchanged.
-- [ ] Changed source files invalidate stale thumbnails.
-- [ ] Cloud-only files do not download solely for thumbnails.
-- [ ] Thumbnail binaries are outside the main SQLite database.
+- [x] Image thumbnails appear in Grid and Gallery where available.
+- [x] Reopening a folder uses cached thumbnails when source metadata is unchanged.
+- [x] Changed source files invalidate stale thumbnails.
+- [x] Cloud-only files do not download solely for thumbnails.
+- [x] Thumbnail binaries are outside the main SQLite database.
 
 ### Verification
-- [ ] Add Rust tests for cache lookup, invalidation, and cleanup metadata behavior.
+- [x] Add Rust tests for cache lookup, invalidation, and cleanup metadata behavior.
 - [ ] Add manual checks that repeated folder opens reuse cached thumbnails.
 - [ ] Test cloud-only or simulated cloud-placeholder files do not trigger thumbnail reads.
 

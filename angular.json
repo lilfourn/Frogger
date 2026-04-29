@@ -6,7 +6,7 @@
     "analytics": false
   },
   "projects": {
-    "tauri-app": {
+    "frogger": {
       "projectType": "application",
       "schematics": {
         "@schematics/angular:component": {
@@ -43,8 +43,8 @@
                 },
                 {
                   "type": "anyComponentStyle",
-                  "maximumWarning": "4kB",
-                  "maximumError": "8kB"
+                  "maximumWarning": "20kB",
+                  "maximumError": "24kB"
                 }
               ],
               "outputHashing": "all"
@@ -64,10 +64,10 @@
           },
           "configurations": {
             "production": {
-              "buildTarget": "tauri-app:build:production"
+              "buildTarget": "frogger:build:production"
             },
             "development": {
-              "buildTarget": "tauri-app:build:development"
+              "buildTarget": "frogger:build:development"
             }
           },
           "defaultConfiguration": "development"
