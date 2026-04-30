@@ -764,6 +764,10 @@
   background: rgba(0, 0, 0, 0.018);
 }
 
+.file-row--search {
+  height: 36px;
+}
+
 .file-row:hover {
   background: rgba(0, 104, 255, 0.075);
 }
@@ -802,11 +806,32 @@
   color: rgba(255, 255, 255, 0.82);
 }
 
+.file-name-stack {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
 .file-name {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.file-path-context {
+  min-width: 0;
+  overflow: hidden;
+  color: #73777f;
+  font-size: 11px;
+  line-height: 1.1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-row--selected .file-path-context {
+  color: rgba(255, 255, 255, 0.78);
 }
 
 .file-glyph {
@@ -828,6 +853,45 @@
   height: 6px;
   border-bottom-left-radius: 2px;
   background: rgba(10, 132, 255, 0.2);
+}
+
+.file-glyph--asset {
+  width: 18px;
+  height: 24px;
+  border-radius: 0;
+  background-color: transparent;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: contain;
+  box-shadow: none;
+}
+
+.file-glyph--asset::after {
+  display: none;
+}
+
+.file-glyph--spreadsheet {
+  background-image: url("/assets/icons/finder/file-sheets-type-icon.png");
+}
+
+.file-glyph--pdf {
+  background-image: url("/assets/icons/finder/pdf-file-icon.png");
+}
+
+.file-glyph--document {
+  background-image: url("/assets/icons/finder/docx-file-type.png");
+}
+
+.file-glyph--markdown {
+  background-image: url("/assets/icons/finder/markdown-file-type.png");
+}
+
+.file-glyph--archive {
+  background-image: url("/assets/icons/finder/zip-file-type.png");
+}
+
+.file-glyph--generic {
+  background-image: url("/assets/icons/finder/basic-file-icon.png");
 }
 
 .file-glyph--folder {

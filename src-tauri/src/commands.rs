@@ -7,6 +7,8 @@ use std::time::SystemTime;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use fuzzy_matcher::skim::SkimMatcherV2;
+use fuzzy_matcher::FuzzyMatcher;
 use image::ImageReader;
 use rusqlite::{params, Connection};
 use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
@@ -16,9 +18,10 @@ use crate::errors::CommandError;
 use crate::models::{
     AppBootstrap, AppCapabilities, AppSettings, AppearanceMode, CloudState, DirectoryListRequest,
     DirectoryListing, EventNames, FileAccessState, FileAccessStatus, FileEntry, FileIcon,
-    FolderViewState, IndexingState, IndexingStatus, PlatformInfo, SidebarItem, SidebarItemType,
-    SidebarSectionId, SidebarSectionState, SidebarState, SortDirection, SortKey, SortState,
-    TabState, ThumbnailDescriptor, ViewMode, WindowGeometry, WindowState,
+    FolderViewState, IndexingState, IndexingStatus, PlatformInfo, SearchMatchReason, SearchResult,
+    SidebarItem, SidebarItemType, SidebarSectionId, SidebarSectionState, SidebarState,
+    SortDirection, SortKey, SortState, TabState, ThumbnailDescriptor, ViewMode, WindowGeometry,
+    WindowState,
 };
 use crate::persistence;
 
@@ -57,7 +60,7 @@ pub fn bootstrap_app(app: tauri::AppHandle) -> Result<AppBootstrap, CommandError
     let settings = load_settings(&conn).map_err(CommandError::from)?;
     let home_dir = home_dir_string();
     let access = detect_file_access(home_dir.as_deref());
-    let windows = match access.status {
+    let windows = match &access.status {
         FileAccessStatus::Granted => home_dir
             .as_deref()
             .map(|path| restore_windows(&conn, path, &settings))
@@ -66,6 +69,19 @@ pub fn bootstrap_app(app: tauri::AppHandle) -> Result<AppBootstrap, CommandError
             .unwrap_or_default(),
         FileAccessStatus::Denied => Vec::new(),
     };
+
+    if matches!(&access.status, FileAccessStatus::Granted) {
+        if let Some(home) = home_dir.as_deref() {
+            if let Err(error) = crate::indexing::ensure_metadata_index_started(
+                &app,
+                database_path.clone(),
+                PathBuf::from(home),
+            ) {
+                #[cfg(debug_assertions)]
+                eprintln!("[frogger] failed to start metadata indexer: {error}");
+            }
+        }
+    }
 
     Ok(AppBootstrap {
         app_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -190,6 +206,16 @@ pub fn list_directory(
         request.cursor.as_deref(),
         request.limit,
     )
+}
+
+#[tauri::command]
+pub fn search_metadata(
+    app: tauri::AppHandle,
+    query: String,
+    limit: Option<usize>,
+) -> Result<Vec<SearchResult>, CommandError> {
+    let conn = open_app_database(&app)?;
+    search_metadata_impl(&conn, &query, limit).map_err(CommandError::from)
 }
 
 #[tauri::command]
@@ -534,9 +560,7 @@ fn list_directory_impl(
                 // something like a dangling ~/python3 symlink makes $HOME
                 // completely unbrowsable.
                 #[cfg(debug_assertions)]
-                eprintln!(
-                    "[frogger] list_directory skipping entry in {target:?}: {_error:?}",
-                );
+                eprintln!("[frogger] list_directory skipping entry in {target:?}: {_error:?}",);
             }
         }
     }
@@ -599,8 +623,8 @@ fn file_entry_from_path(
     // Use symlink_metadata() first so we can detect the entry even when it is
     // a broken symlink (follow-through metadata() would return ENOENT and
     // previously caused the whole parent directory to be reported as missing).
-    let link_metadata = std::fs::symlink_metadata(path)
-        .map_err(|error| fs_access_error(path, error))?;
+    let link_metadata =
+        std::fs::symlink_metadata(path).map_err(|error| fs_access_error(path, error))?;
     let is_symlink = link_metadata.file_type().is_symlink();
 
     // For symlinks, resolve the target so we can report the correct is_dir and
@@ -650,6 +674,8 @@ fn file_entry_from_path(
         kind_for(is_dir, extension.as_deref())
     };
 
+    let icon = icon_for(is_dir, extension.as_deref());
+
     Ok(Some(FileEntry {
         path: path.to_string_lossy().into_owned(),
         parent_path: parent.to_string_lossy().into_owned(),
@@ -663,7 +689,7 @@ fn file_entry_from_path(
         hidden,
         extension,
         read_only: metadata.permissions().readonly(),
-        icon: icon_for(is_dir, kind),
+        icon,
         cloud: CloudState::Local,
         is_symlink,
         symlink_broken,
@@ -688,28 +714,65 @@ fn display_name_for(
         .unwrap_or_else(|| name.to_string())
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FileCategory {
+    Application,
+    Archive,
+    Audio,
+    Document,
+    Image,
+    Markdown,
+    Pdf,
+    SourceCode,
+    Spreadsheet,
+    Text,
+    Video,
+    WordDocument,
+}
+
+fn file_category(extension: Option<&str>) -> FileCategory {
+    match extension.map(|value| value.to_ascii_lowercase()).as_deref() {
+        Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "heic" | "svg") => FileCategory::Image,
+        Some("mov" | "mp4" | "m4v" | "avi" | "mkv" | "webm") => FileCategory::Video,
+        Some("mp3" | "wav" | "aac" | "flac" | "m4a" | "ogg") => FileCategory::Audio,
+        Some("pdf") => FileCategory::Pdf,
+        Some("xls" | "xlsx" | "xlsm" | "xlsb" | "csv" | "tsv" | "ods" | "numbers") => {
+            FileCategory::Spreadsheet
+        }
+        Some("doc" | "docx" | "odt" | "pages") => FileCategory::WordDocument,
+        Some("md" | "markdown") => FileCategory::Markdown,
+        Some("txt" | "rtf" | "log") => FileCategory::Text,
+        Some("zip" | "tar" | "gz" | "bz2" | "xz" | "7z" | "rar") => FileCategory::Archive,
+        Some("app" | "exe" | "dmg" | "pkg") => FileCategory::Application,
+        Some("rs" | "ts" | "tsx" | "js" | "jsx" | "json" | "html" | "css" | "scss") => {
+            FileCategory::SourceCode
+        }
+        Some(_) | None => FileCategory::Document,
+    }
+}
+
 fn kind_for(is_dir: bool, extension: Option<&str>) -> &'static str {
     if is_dir {
         return "Folder";
     }
 
-    match extension.map(|value| value.to_ascii_lowercase()).as_deref() {
-        Some("png" | "jpg" | "jpeg" | "gif" | "webp" | "heic" | "svg") => "Image",
-        Some("mov" | "mp4" | "m4v" | "avi" | "mkv" | "webm") => "Video",
-        Some("mp3" | "wav" | "aac" | "flac" | "m4a" | "ogg") => "Audio",
-        Some("pdf") => "PDF Document",
-        Some("txt" | "md" | "rtf" | "log") => "Text Document",
-        Some("zip" | "tar" | "gz" | "bz2" | "xz" | "7z" | "rar") => "Archive",
-        Some("app" | "exe" | "dmg" | "pkg") => "Application",
-        Some("rs" | "ts" | "tsx" | "js" | "jsx" | "json" | "html" | "css" | "scss") => {
-            "Source Code"
-        }
-        Some(_) => "Document",
-        None => "Document",
+    match file_category(extension) {
+        FileCategory::Application => "Application",
+        FileCategory::Archive => "Archive",
+        FileCategory::Audio => "Audio",
+        FileCategory::Document => "Document",
+        FileCategory::Image => "Image",
+        FileCategory::Markdown => "Markdown Document",
+        FileCategory::Pdf => "PDF Document",
+        FileCategory::SourceCode => "Source Code",
+        FileCategory::Spreadsheet => "Spreadsheet",
+        FileCategory::Text => "Text Document",
+        FileCategory::Video => "Video",
+        FileCategory::WordDocument => "Word Document",
     }
 }
 
-fn icon_for(is_dir: bool, kind: &str) -> FileIcon {
+fn icon_for(is_dir: bool, extension: Option<&str>) -> FileIcon {
     if is_dir {
         return FileIcon {
             name: "folder".to_string(),
@@ -717,10 +780,179 @@ fn icon_for(is_dir: bool, kind: &str) -> FileIcon {
         };
     }
 
+    let name = match file_category(extension) {
+        FileCategory::Archive => "archive",
+        FileCategory::Document => "generic",
+        FileCategory::Markdown => "markdown",
+        FileCategory::Pdf => "pdf",
+        FileCategory::Spreadsheet => "spreadsheet",
+        FileCategory::WordDocument => "word-document",
+        FileCategory::Application
+        | FileCategory::Audio
+        | FileCategory::Image
+        | FileCategory::SourceCode
+        | FileCategory::Text
+        | FileCategory::Video => "file",
+    };
+
     FileIcon {
-        name: kind.to_ascii_lowercase().replace(' ', "-"),
+        name: name.to_string(),
         color: None,
     }
+}
+
+#[derive(Debug)]
+struct SearchCandidate {
+    result: SearchResult,
+    search_text: String,
+    recent_boost: f64,
+    modified_boost: f64,
+}
+
+fn search_metadata_impl(
+    conn: &Connection,
+    query: &str,
+    limit: Option<usize>,
+) -> Result<Vec<SearchResult>> {
+    let normalized_query = query.trim().to_ascii_lowercase();
+    if normalized_query.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let result_limit = limit.unwrap_or(50).clamp(1, 200);
+    let candidate_limit = (result_limit * 25).clamp(250, 5_000);
+    let escaped_query = escape_sql_like(&normalized_query);
+    let prefix_pattern = format!("{escaped_query}%");
+    let contains_pattern = format!("%{escaped_query}%");
+    let first_char_pattern = normalized_query
+        .chars()
+        .next()
+        .map(|character| format!("%{}%", escape_sql_like(&character.to_string())))
+        .unwrap_or_else(|| contains_pattern.clone());
+
+    let mut stmt = conn.prepare(
+        "SELECT path, parent_path, name, display_name, kind, is_dir, size, modified_at,
+                search_text, recent_boost, modified_boost
+         FROM metadata_index
+         WHERE lower(name) = ?1
+            OR lower(display_name) = ?1
+            OR lower(name) LIKE ?2 ESCAPE '\\'
+            OR search_text LIKE ?3 ESCAPE '\\'
+            OR lower(path) LIKE ?3 ESCAPE '\\'
+            OR lower(name) LIKE ?4 ESCAPE '\\'
+         ORDER BY is_dir DESC, recent_boost DESC, modified_at DESC, name ASC
+         LIMIT ?5",
+    )?;
+
+    let rows = stmt.query_map(
+        params![
+            &normalized_query,
+            &prefix_pattern,
+            &contains_pattern,
+            &first_char_pattern,
+            candidate_limit as i64,
+        ],
+        |row| {
+            let size = row
+                .get::<_, Option<i64>>(6)?
+                .and_then(|value| (value >= 0).then_some(value as u64));
+            Ok(SearchCandidate {
+                result: SearchResult {
+                    path: row.get(0)?,
+                    parent_path: row.get(1)?,
+                    name: row.get(2)?,
+                    display_name: row.get(3)?,
+                    kind: row.get(4)?,
+                    is_dir: row.get::<_, i64>(5)? == 1,
+                    size,
+                    modified_at: row.get(7)?,
+                    rank: 0,
+                    match_reason: SearchMatchReason::Substring,
+                },
+                search_text: row.get(8)?,
+                recent_boost: row.get(9)?,
+                modified_boost: row.get(10)?,
+            })
+        },
+    )?;
+
+    let matcher = SkimMatcherV2::default();
+    let mut ranked = Vec::new();
+    for row in rows {
+        let candidate = row?;
+        if let Some((rank, reason)) =
+            score_search_candidate(&candidate, &normalized_query, &matcher)
+        {
+            let mut result = candidate.result;
+            result.rank = rank;
+            result.match_reason = reason;
+            ranked.push(result);
+        }
+    }
+
+    ranked.sort_by(|left, right| {
+        right
+            .rank
+            .cmp(&left.rank)
+            .then_with(|| right.is_dir.cmp(&left.is_dir))
+            .then_with(|| {
+                left.name
+                    .to_ascii_lowercase()
+                    .cmp(&right.name.to_ascii_lowercase())
+            })
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    ranked.truncate(result_limit);
+    Ok(ranked)
+}
+
+fn score_search_candidate(
+    candidate: &SearchCandidate,
+    query: &str,
+    matcher: &SkimMatcherV2,
+) -> Option<(i64, SearchMatchReason)> {
+    let name = candidate.result.name.to_ascii_lowercase();
+    let display_name = candidate.result.display_name.to_ascii_lowercase();
+    let path = candidate.result.path.to_ascii_lowercase();
+    let search_text = candidate.search_text.to_ascii_lowercase();
+
+    let (base, reason, fuzzy_score) = if name == query || display_name == query {
+        (1_000_000_i64, SearchMatchReason::Exact, 0_i64)
+    } else if name.starts_with(query) || display_name.starts_with(query) {
+        (800_000_i64, SearchMatchReason::Prefix, 0_i64)
+    } else if search_text.contains(query) || path.contains(query) {
+        (600_000_i64, SearchMatchReason::Substring, 0_i64)
+    } else {
+        let fuzzy_score = [
+            matcher.fuzzy_match(&candidate.result.name, query),
+            matcher.fuzzy_match(&candidate.result.display_name, query),
+            matcher.fuzzy_match(&candidate.result.parent_path, query),
+            matcher.fuzzy_match(&candidate.search_text, query),
+        ]
+        .into_iter()
+        .flatten()
+        .max()?;
+        (400_000_i64, SearchMatchReason::Fuzzy, fuzzy_score)
+    };
+
+    let folder_boost = if candidate.result.is_dir { 100_000 } else { 0 };
+    let recent_boost = (candidate.recent_boost * 1_000.0).round() as i64;
+    let modified_boost = (candidate.modified_boost * 1_000.0).round() as i64;
+    Some((
+        base + folder_boost + fuzzy_score + recent_boost + modified_boost,
+        reason,
+    ))
+}
+
+fn escape_sql_like(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        if matches!(character, '%' | '_' | '\\') {
+            escaped.push('\\');
+        }
+        escaped.push(character);
+    }
+    escaped
 }
 
 fn sort_entries(entries: &mut [FileEntry], sort: &SortState, folders_first: bool) {
@@ -1189,19 +1421,47 @@ fn is_allowed_display_setting(key: &str, value: &str) -> bool {
 }
 
 fn load_indexing_state(conn: &Connection) -> Result<IndexingState> {
-    let (status, has_initial_index): (String, i64) = conn
+    let (status, has_initial_index, checkpoint_json, error_json): (
+        String,
+        i64,
+        String,
+        Option<String>,
+    ) = conn
         .query_row(
-            "SELECT status, has_initial_index FROM index_state WHERE id = 'metadata'",
+            "SELECT status, has_initial_index, checkpoint_json, error_json
+             FROM index_state WHERE id = 'metadata'",
             [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .context("failed to load metadata index state")?;
 
-    let indexed_item_count = conn
-        .query_row("SELECT COUNT(*) FROM metadata_index", [], |row| {
-            row.get::<_, u64>(0)
-        })
-        .context("failed to count indexed items")?;
+    let checkpoint = serde_json::from_str::<serde_json::Value>(&checkpoint_json).ok();
+    let indexed_item_count = checkpoint
+        .as_ref()
+        .and_then(|value| value.get("indexedItemCount"))
+        .and_then(|value| value.as_u64())
+        .map(Ok)
+        .unwrap_or_else(|| {
+            conn.query_row("SELECT COUNT(*) FROM metadata_index", [], |row| {
+                row.get::<_, u64>(0)
+            })
+            .context("failed to count indexed items")
+        })?;
+
+    let checkpoint_message = checkpoint
+        .as_ref()
+        .and_then(|value| value.get("message"))
+        .and_then(|value| value.as_str())
+        .map(ToString::to_string);
+    let error_message = error_json
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .and_then(|value| {
+            value
+                .get("message")
+                .and_then(|message| message.as_str())
+                .map(ToString::to_string)
+        });
 
     Ok(IndexingState {
         status: match status.as_str() {
@@ -1213,7 +1473,7 @@ fn load_indexing_state(conn: &Connection) -> Result<IndexingState> {
         },
         has_initial_index: has_initial_index == 1,
         indexed_item_count,
-        message: None,
+        message: error_message.or(checkpoint_message),
     })
 }
 
@@ -1923,6 +2183,121 @@ mod tests {
     }
 
     #[test]
+    fn search_metadata_ranks_exact_prefix_and_folders() {
+        let path = std::env::temp_dir().join(format!("frogger-search-{}.sqlite3", Uuid::new_v4()));
+        let conn = persistence::open_database(&path).expect("database should migrate");
+
+        insert_metadata_search_row(
+            &conn,
+            TestMetadataRow {
+                path: "/tmp/project",
+                parent_path: "/tmp",
+                name: "project",
+                display_name: "project",
+                kind: "Folder",
+                is_dir: true,
+                size: None,
+                search_text: "project folder tmp",
+            },
+        );
+        insert_metadata_search_row(
+            &conn,
+            TestMetadataRow {
+                path: "/tmp/project-notes.md",
+                parent_path: "/tmp",
+                name: "project-notes.md",
+                display_name: "project-notes",
+                kind: "Markdown Document",
+                is_dir: false,
+                size: Some(42),
+                search_text: "project-notes markdown document tmp",
+            },
+        );
+        insert_metadata_search_row(
+            &conn,
+            TestMetadataRow {
+                path: "/tmp/other.txt",
+                parent_path: "/tmp",
+                name: "other.txt",
+                display_name: "other",
+                kind: "Text Document",
+                is_dir: false,
+                size: Some(5),
+                search_text: "other text document tmp",
+            },
+        );
+
+        let results = search_metadata_impl(&conn, "project", Some(10)).expect("search should run");
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].path, "/tmp/project");
+        assert_eq!(results[0].match_reason, SearchMatchReason::Exact);
+        assert!(results[0].is_dir);
+        assert_eq!(results[1].match_reason, SearchMatchReason::Prefix);
+
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn search_metadata_supports_fuzzy_filename_matches() {
+        let path =
+            std::env::temp_dir().join(format!("frogger-search-fuzzy-{}.sqlite3", Uuid::new_v4()));
+        let conn = persistence::open_database(&path).expect("database should migrate");
+
+        insert_metadata_search_row(
+            &conn,
+            TestMetadataRow {
+                path: "/tmp/README.md",
+                parent_path: "/tmp",
+                name: "README.md",
+                display_name: "README",
+                kind: "Markdown Document",
+                is_dir: false,
+                size: Some(100),
+                search_text: "readme markdown document tmp",
+            },
+        );
+
+        let results = search_metadata_impl(&conn, "rdm", Some(10)).expect("search should run");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].path, "/tmp/README.md");
+        assert_eq!(results[0].match_reason, SearchMatchReason::Fuzzy);
+
+        std::fs::remove_file(path).ok();
+    }
+
+    struct TestMetadataRow<'a> {
+        path: &'a str,
+        parent_path: &'a str,
+        name: &'a str,
+        display_name: &'a str,
+        kind: &'a str,
+        is_dir: bool,
+        size: Option<i64>,
+        search_text: &'a str,
+    }
+
+    fn insert_metadata_search_row(conn: &Connection, row: TestMetadataRow<'_>) {
+        conn.execute(
+            "INSERT INTO metadata_index (
+                path, parent_path, name, display_name, kind, is_dir, size, search_text
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                row.path,
+                row.parent_path,
+                row.name,
+                row.display_name,
+                row.kind,
+                if row.is_dir { 1_i64 } else { 0_i64 },
+                row.size,
+                row.search_text,
+            ],
+        )
+        .expect("metadata search row should insert");
+    }
+
+    #[test]
     fn file_access_denied_when_home_is_missing() {
         let access = detect_file_access(Some("/definitely/not/a/frogger/home"));
         assert_eq!(access.status, FileAccessStatus::Denied);
@@ -2205,13 +2580,60 @@ mod tests {
             .expect("notes should exist");
         assert_eq!(notes.extension.as_deref(), Some("md"));
         assert_eq!(notes.display_name, "notes.md");
-        assert_eq!(notes.kind, "Text Document");
+        assert_eq!(notes.kind, "Markdown Document");
+        assert_eq!(notes.icon.name, "markdown");
         assert_eq!(notes.size, Some(5));
         assert!(notes.modified_at.is_some());
         assert!(full_listing
             .entries
             .iter()
             .any(|entry| entry.name == ".env" && entry.hidden));
+    }
+
+    #[test]
+    fn list_directory_assigns_document_icon_categories() {
+        let temp = tempdir().expect("tempdir should exist");
+        for name in [
+            "archive.zip",
+            "budget.xlsx",
+            "data.csv",
+            "letter.docx",
+            "notes.md",
+            "readme.txt",
+            "report.pdf",
+            "unknown.blob",
+        ] {
+            std::fs::write(temp.path().join(name), "sample").expect("file should be written");
+        }
+
+        let listing = list_directory_impl(
+            temp.path().to_string_lossy().into_owned(),
+            &SortState {
+                key: SortKey::Name,
+                direction: SortDirection::Asc,
+            },
+            false,
+            true,
+            true,
+            None,
+            None,
+        )
+        .expect("directory should list");
+        let entries = listing
+            .entries
+            .iter()
+            .map(|entry| (entry.name.as_str(), entry))
+            .collect::<BTreeMap<_, _>>();
+
+        assert_eq!(entries["archive.zip"].icon.name, "archive");
+        assert_eq!(entries["budget.xlsx"].icon.name, "spreadsheet");
+        assert_eq!(entries["data.csv"].icon.name, "spreadsheet");
+        assert_eq!(entries["letter.docx"].icon.name, "word-document");
+        assert_eq!(entries["notes.md"].icon.name, "markdown");
+        assert_eq!(entries["report.pdf"].icon.name, "pdf");
+        assert_eq!(entries["unknown.blob"].icon.name, "generic");
+        assert_eq!(entries["readme.txt"].icon.name, "file");
+        assert_eq!(entries["unknown.blob"].kind, "Document");
     }
 
     #[test]

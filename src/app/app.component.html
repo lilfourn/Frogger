@@ -176,7 +176,14 @@
 
           <label class="search-field">
             <span class="app-icon app-icon--search icon-search" aria-hidden="true"></span>
-            <input type="search" [placeholder]="searchPlaceholder(state)" [disabled]="!state.indexing.hasInitialIndex" />
+            <input
+              type="search"
+              [value]="searchQuery()"
+              [placeholder]="searchPlaceholder(state)"
+              [disabled]="!state.indexing.hasInitialIndex"
+              (input)="onSearchInput($event)"
+              (keydown.escape)="clearSearch()"
+            />
           </label>
         </header>
 
@@ -203,10 +210,10 @@
 
         <section
           class="file-stage"
-          [class.file-stage--full]="session.activeTab()?.folderState?.viewMode !== 'list'"
+          [class.file-stage--full]="!isSearchActive() && session.activeTab()?.folderState?.viewMode !== 'list'"
           aria-label="Current folder"
         >
-          @if (session.activeTab()?.folderState?.viewMode === 'list') {
+          @if (isSearchActive() || session.activeTab()?.folderState?.viewMode === 'list') {
             <div class="file-list-header" role="row" [style.grid-template-columns]="listGridTemplate()">
               @for (column of listColumns(); track column.id) {
                 <button
@@ -230,7 +237,55 @@
             </div>
           }
 
-          @if (listingLoading()) {
+          @if (isSearchActive()) {
+            @if (searchLoading()) {
+              <div class="file-list-placeholder" aria-label="Search placeholder">
+                @for (row of placeholderRows; track row) {
+                  <div class="placeholder-row" [class.placeholder-row--short]="row % 6 === 0"></div>
+                }
+              </div>
+            } @else if (searchError()) {
+              <div class="file-list-state" role="status">
+                <strong>Search unavailable</strong>
+                <span>{{ searchError() }}</span>
+              </div>
+            } @else if (searchResults().length === 0) {
+              <div class="file-list-state" role="status">
+                <strong>No results</strong>
+                <span>No indexed items match “{{ searchQuery() }}”.</span>
+              </div>
+            } @else {
+              <cdk-virtual-scroll-viewport [itemSize]="36" [minBufferPx]="640" [maxBufferPx]="1280" class="file-list-viewport">
+                <button
+                  *cdkVirtualFor="let entry of searchResults(); trackBy: trackEntry"
+                  type="button"
+                  class="file-row file-row--search"
+                  role="row"
+                  [class.file-row--selected]="selectedPath() === entry.path"
+                  [style.grid-template-columns]="listGridTemplate()"
+                  (click)="selectEntry(entry)"
+                  (dblclick)="openEntry(entry)"
+                >
+                  <span class="file-cell file-cell--name" role="gridcell">
+                    <span [class]="fileGlyphClass(entry)" aria-hidden="true"></span>
+                    <span class="file-name-stack">
+                      <span class="file-name">{{ entry.displayName }}</span>
+                      <span class="file-path-context">{{ entry.parentPath }}</span>
+                    </span>
+                  </span>
+                  @if (columnVisible('size')) {
+                    <span class="file-cell file-cell--size" role="gridcell">{{ fileSizeLabel(entry) }}</span>
+                  }
+                  @if (columnVisible('kind')) {
+                    <span class="file-cell" role="gridcell">{{ entry.kind }}</span>
+                  }
+                  @if (columnVisible('dateModified')) {
+                    <span class="file-cell" role="gridcell">{{ dateLabel(entry.modifiedAt) }}</span>
+                  }
+                </button>
+              </cdk-virtual-scroll-viewport>
+            }
+          } @else if (listingLoading()) {
             <div class="file-list-placeholder" aria-label="Directory listing placeholder">
               @for (row of placeholderRows; track row) {
                 <div class="placeholder-row" [class.placeholder-row--short]="row % 6 === 0"></div>
@@ -268,7 +323,7 @@
                         @if (thumbnailSrc(entry); as thumb) {
                           <img class="grid-thumbnail" [src]="thumb" alt="" />
                         } @else {
-                          <span class="grid-glyph file-glyph" [class.file-glyph--folder]="entry.isDir" [class.file-glyph--alias]="entry.isSymlink" aria-hidden="true"></span>
+                          <span [class]="fileGlyphClass(entry, 'grid-glyph')" aria-hidden="true"></span>
                         }
                         <span>{{ entry.displayName }}</span>
                         @if (entry.symlinkBroken) {
@@ -294,7 +349,7 @@
                             (click)="selectColumnEntry(entry, columnIndex)"
                             (dblclick)="openEntry(entry)"
                           >
-                            <span class="file-glyph" [class.file-glyph--folder]="entry.isDir" [class.file-glyph--alias]="entry.isSymlink" aria-hidden="true"></span>
+                            <span [class]="fileGlyphClass(entry)" aria-hidden="true"></span>
                             <span>{{ entry.displayName }}</span>
                             @if (entry.symlinkBroken) {
                               <span class="alias-badge alias-badge--broken" aria-label="Broken alias">⚠</span>
@@ -320,7 +375,7 @@
                         @if (thumbnailSrc(preview); as thumb) {
                           <img class="gallery-thumbnail" [src]="thumb" alt="" />
                         } @else {
-                          <span class="gallery-glyph file-glyph" [class.file-glyph--folder]="preview.isDir" aria-hidden="true"></span>
+                          <span [class]="fileGlyphClass(preview, 'gallery-glyph')" aria-hidden="true"></span>
                         }
                         <h2>{{ preview.displayName }}</h2>
                         <p>{{ preview.kind }} · {{ fileSizeLabel(preview) }} · {{ dateLabel(preview.modifiedAt) }}</p>
@@ -340,7 +395,7 @@
                           @if (thumbnailSrc(entry); as thumb) {
                             <img class="strip-thumbnail" [src]="thumb" alt="" />
                           } @else {
-                            <span class="file-glyph" [class.file-glyph--folder]="entry.isDir" [class.file-glyph--alias]="entry.isSymlink" aria-hidden="true"></span>
+                            <span [class]="fileGlyphClass(entry)" aria-hidden="true"></span>
                           }
                           <span>{{ entry.displayName }}</span>
                           @if (entry.symlinkBroken) {
@@ -368,7 +423,7 @@
                       (dblclick)="openEntry(entry)"
                     >
                       <span class="file-cell file-cell--name" role="gridcell">
-                        <span class="file-glyph" [class.file-glyph--folder]="entry.isDir" [class.file-glyph--alias]="entry.isSymlink" aria-hidden="true"></span>
+                        <span [class]="fileGlyphClass(entry)" aria-hidden="true"></span>
                         <span class="file-name">{{ entry.displayName }}</span>
                         @if (entry.symlinkBroken) {
                           <span class="alias-badge alias-badge--broken" aria-label="Broken alias">⚠</span>

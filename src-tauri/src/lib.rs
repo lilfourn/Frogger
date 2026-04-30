@@ -1,5 +1,6 @@
 pub mod commands;
 pub mod errors;
+pub mod indexing;
 pub mod models;
 pub mod persistence;
 
@@ -60,6 +61,7 @@ pub fn run() {
             commands::record_recent_item,
             commands::save_folder_view_state,
             commands::save_session_state,
+            commands::search_metadata,
             commands::set_browser_display_setting,
             commands::set_sidebar_section_visibility,
             commands::unpin_sidebar_folder

@@ -1,8 +1,10 @@
 import { ScrollingModule } from "@angular/cdk/scrolling";
-import { Component, OnInit, computed, effect, inject, isDevMode, signal } from "@angular/core";
+import { Component, OnDestroy, OnInit, computed, effect, inject, isDevMode, signal } from "@angular/core";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 
 import { FroggerApiService } from "./core/frogger-api.service";
+import { FroggerEventsService } from "./core/frogger-events.service";
 import { SessionStoreService } from "./core/session-store.service";
 import type {
   AppBootstrap,
@@ -10,6 +12,7 @@ import type {
   DirectoryListing,
   FileEntry,
   FolderViewState,
+  SearchResult,
   SidebarItem,
   SidebarSectionId,
   SidebarState,
@@ -45,8 +48,9 @@ interface ListColumn {
   templateUrl: "./app.component.html",
   styleUrl: "./app.component.css",
 })
-export class AppComponent implements OnInit {
+export class AppComponent implements OnInit, OnDestroy {
   private readonly api = inject(FroggerApiService);
+  private readonly events = inject(FroggerEventsService);
   readonly session = inject(SessionStoreService);
 
   readonly bootstrap = signal<AppBootstrap | null>(null);
@@ -61,16 +65,24 @@ export class AppComponent implements OnInit {
   readonly listingError = signal<string | null>(null);
   readonly listingErrorDetails = signal<string | null>(null);
   readonly selectedPath = signal<string | null>(null);
+  readonly searchQuery = signal("");
+  readonly searchResults = signal<FileEntry[]>([]);
+  readonly searchLoading = signal(false);
+  readonly searchError = signal<string | null>(null);
   readonly thumbnails = signal<Record<string, string>>({});
   readonly placeholderRows = Array.from({ length: 20 }, (_, index) => index);
 
   private listingRequestId = 0;
   private navigationRequestId = 0;
   private columnListingRequestId = 0;
+  private searchRequestId = 0;
   private activeDirectoryKey: string | null = null;
+  private eventUnlisteners: UnlistenFn[] = [];
+  private searchDebounceHandle: ReturnType<typeof setTimeout> | null = null;
   private resizingSidebar = false;
   private readonly minSidebarWidth = 180;
   private readonly maxSidebarWidth = 360;
+  private readonly thumbnailConcurrency = 6;
   private resizingColumn: ListColumnId | null = null;
   private readonly columns: ListColumn[] = [
     { id: "name", label: "Name", sortKey: "name", minWidth: 180 },
@@ -131,6 +143,7 @@ export class AppComponent implements OnInit {
     { id: "gallery", label: "Gallery View", icon: "icon-view-gallery" },
   ];
 
+  readonly isSearchActive = computed(() => this.searchQuery().trim().length > 0);
   readonly selectedCount = computed(() => (this.selectedPath() ? 1 : 0));
   readonly selectedEntry = computed(() => {
     const selectedPath = this.selectedPath();
@@ -138,7 +151,10 @@ export class AppComponent implements OnInit {
       return null;
     }
 
-    return this.directoryListing()?.entries.find((entry) => entry.path === selectedPath) ?? null;
+    const entries = this.isSearchActive()
+      ? this.searchResults()
+      : this.directoryListing()?.entries ?? [];
+    return entries.find((entry) => entry.path === selectedPath) ?? null;
   });
   readonly favoriteTargetPath = computed(() => {
     const selectedEntry = this.selectedEntry();
@@ -219,8 +235,56 @@ export class AppComponent implements OnInit {
     void this.loadBootstrap();
   }
 
+  ngOnDestroy(): void {
+    this.clearEventListeners();
+    if (this.searchDebounceHandle) {
+      clearTimeout(this.searchDebounceHandle);
+      this.searchDebounceHandle = null;
+    }
+  }
+
   retryBootstrap(): void {
     void this.loadBootstrap();
+  }
+
+  onSearchInput(event: Event): void {
+    const value = event.target instanceof HTMLInputElement ? event.target.value : "";
+    this.searchQuery.set(value);
+    this.selectedPath.set(null);
+    this.searchError.set(null);
+
+    if (this.searchDebounceHandle) {
+      clearTimeout(this.searchDebounceHandle);
+      this.searchDebounceHandle = null;
+    }
+
+    const query = value.trim();
+    if (!query) {
+      this.searchRequestId += 1;
+      this.searchResults.set([]);
+      this.searchLoading.set(false);
+      return;
+    }
+
+    this.searchLoading.set(true);
+    const requestId = ++this.searchRequestId;
+    this.searchDebounceHandle = setTimeout(() => {
+      this.searchDebounceHandle = null;
+      void this.runSearch(query, requestId);
+    }, 125);
+  }
+
+  clearSearch(): void {
+    if (this.searchDebounceHandle) {
+      clearTimeout(this.searchDebounceHandle);
+      this.searchDebounceHandle = null;
+    }
+    this.searchRequestId += 1;
+    this.searchQuery.set("");
+    this.searchResults.set([]);
+    this.searchLoading.set(false);
+    this.searchError.set(null);
+    this.selectedPath.set(null);
   }
 
   openHomeTab(): void {
@@ -363,7 +427,7 @@ export class AppComponent implements OnInit {
     this.selectedPath.set(entry.path);
 
     const activeTab = this.session.activeTab();
-    if (activeTab) {
+    if (activeTab && !this.isSearchActive()) {
       this.updateActiveFolderState({ ...activeTab.folderState, selectedItemPath: entry.path });
     }
   }
@@ -418,12 +482,15 @@ export class AppComponent implements OnInit {
     // show a clear, contained error rather than letting the call bubble up
     // as a whole-folder listing failure.
     if (entry.symlinkBroken) {
-      this.listingError.set(
-        `“${entry.displayName}” is a broken alias and cannot be opened.`,
-      );
-      this.listingErrorDetails.set(
-        entry.symlinkTarget ? `missing target — ${entry.symlinkTarget}` : null,
-      );
+      const message = `“${entry.displayName}” is a broken alias and cannot be opened.`;
+      if (this.isSearchActive()) {
+        this.searchError.set(message);
+      } else {
+        this.listingError.set(message);
+        this.listingErrorDetails.set(
+          entry.symlinkTarget ? `missing target — ${entry.symlinkTarget}` : null,
+        );
+      }
       return;
     }
 
@@ -437,7 +504,12 @@ export class AppComponent implements OnInit {
       const sidebar = await this.api.openFileWithDefaultApp(entry.path);
       this.applySidebarState(sidebar);
     } catch (error: unknown) {
-      this.listingError.set(this.toErrorMessage(error));
+      const message = this.toErrorMessage(error);
+      if (this.isSearchActive()) {
+        this.searchError.set(message);
+      } else {
+        this.listingError.set(message);
+      }
     }
   }
 
@@ -463,6 +535,25 @@ export class AppComponent implements OnInit {
 
   thumbnailSrc(entry: FileEntry): string | null {
     return this.thumbnails()[entry.path] ?? null;
+  }
+
+  fileGlyphClass(entry: FileEntry, extraClass: string | null = null): string {
+    const classes = extraClass ? [extraClass, "file-glyph"] : ["file-glyph"];
+
+    if (entry.isDir) {
+      classes.push("file-glyph--folder");
+    } else {
+      const assetClass = this.fileIconAssetClass(entry.icon.name);
+      if (assetClass) {
+        classes.push("file-glyph--asset", assetClass);
+      }
+    }
+
+    if (entry.isSymlink) {
+      classes.push("file-glyph--alias");
+    }
+
+    return classes.join(" ");
   }
 
   symlinkTooltip(entry: FileEntry): string | null {
@@ -602,8 +693,19 @@ export class AppComponent implements OnInit {
       return "Indexing";
     }
 
-    const listing = this.directoryListing();
     const selectedCount = this.selectedCount();
+
+    if (this.isSearchActive()) {
+      if (this.searchLoading()) {
+        return "Searching";
+      }
+
+      const count = this.searchResults().length;
+      const resultLabel = count === 1 ? "1 result" : `${count} results`;
+      return selectedCount === 0 ? resultLabel : `${resultLabel}, ${selectedCount} selected`;
+    }
+
+    const listing = this.directoryListing();
 
     if (this.listingLoading()) {
       return "Loading";
@@ -730,6 +832,9 @@ export class AppComponent implements OnInit {
       return;
     }
 
+    if (this.isSearchActive()) {
+      this.clearSearch();
+    }
     this.session.updateActiveTabPath(path, label, folderState);
   }
 
@@ -777,10 +882,82 @@ export class AppComponent implements OnInit {
       const activeWindow = this.session.activeWindow();
       this.sidebarCollapsed.set(activeWindow?.sidebarCollapsed ?? false);
       this.sidebarWidth.set(this.clampSidebarWidth(activeWindow?.sidebarWidth ?? 236));
+      void this.registerBootstrapEvents(bootstrap);
     } catch (error: unknown) {
       this.errorMessage.set(this.toErrorMessage(error));
     } finally {
       this.loading.set(false);
+    }
+  }
+
+  private clearEventListeners(): void {
+    for (const unlisten of this.eventUnlisteners) {
+      unlisten();
+    }
+    this.eventUnlisteners = [];
+  }
+
+  private async runSearch(query: string, requestId: number): Promise<void> {
+    if (!this.bootstrap()?.indexing.hasInitialIndex) {
+      this.searchLoading.set(false);
+      return;
+    }
+
+    try {
+      const results = await this.api.searchMetadata(query, 100);
+      if (requestId === this.searchRequestId && this.searchQuery().trim() === query) {
+        this.searchResults.set(results.map((result) => this.searchResultToFileEntry(result)));
+        this.searchError.set(null);
+      }
+    } catch (error: unknown) {
+      if (requestId === this.searchRequestId) {
+        this.searchResults.set([]);
+        this.searchError.set(this.toErrorMessage(error));
+      }
+    } finally {
+      if (requestId === this.searchRequestId) {
+        this.searchLoading.set(false);
+      }
+    }
+  }
+
+  private searchResultToFileEntry(result: SearchResult): FileEntry {
+    const extension = result.isDir ? null : this.extensionForName(result.name);
+    return {
+      path: result.path,
+      parentPath: result.parentPath,
+      name: result.name,
+      displayName: result.displayName,
+      kind: result.kind,
+      isDir: result.isDir,
+      size: result.size,
+      modifiedAt: result.modifiedAt,
+      createdAt: null,
+      hidden: result.name.startsWith("."),
+      extension,
+      readOnly: false,
+      icon: this.iconForSearchResult(result, extension),
+      cloud: "local",
+      isSymlink: result.kind.toLowerCase().includes("alias"),
+      symlinkBroken: false,
+      symlinkTarget: null,
+    };
+  }
+
+  private async registerBootstrapEvents(bootstrap: AppBootstrap): Promise<void> {
+    this.clearEventListeners();
+
+    try {
+      this.eventUnlisteners = await this.events.listenToBootstrapEvents(bootstrap.events, {
+        indexingProgress: (indexing) => {
+          this.bootstrap.update((current) => current ? { ...current, indexing } : current);
+        },
+      });
+    } catch (error: unknown) {
+      if (isDevMode()) {
+        // eslint-disable-next-line no-console
+        console.warn("[frogger] failed to register backend event listeners", error);
+      }
     }
   }
 
@@ -861,8 +1038,15 @@ export class AppComponent implements OnInit {
     }
 
     const next: Record<string, string> = {};
-    await Promise.all(
-      imageEntries.map(async (entry) => {
+    let nextIndex = 0;
+    const workerCount = Math.min(this.thumbnailConcurrency, imageEntries.length);
+    const workers = Array.from({ length: workerCount }, async () => {
+      while (nextIndex < imageEntries.length) {
+        if (requestId !== this.listingRequestId || this.directoryListing()?.path !== listingPath) {
+          return;
+        }
+
+        const entry = imageEntries[nextIndex++];
         try {
           const thumbnail = await this.api.getThumbnail(entry.path);
           if (thumbnail) {
@@ -871,8 +1055,9 @@ export class AppComponent implements OnInit {
         } catch {
           // Thumbnail failures should not block browsing.
         }
-      }),
-    );
+      }
+    });
+    await Promise.all(workers);
 
     if (requestId === this.listingRequestId && this.directoryListing()?.path === listingPath) {
       this.thumbnails.set(next);
@@ -885,6 +1070,63 @@ export class AppComponent implements OnInit {
     }
 
     return ["png", "jpg", "jpeg", "webp"].includes((entry.extension ?? "").toLowerCase());
+  }
+
+  private extensionForName(name: string): string | null {
+    const index = name.lastIndexOf(".");
+    if (index <= 0 || index === name.length - 1) {
+      return null;
+    }
+
+    return name.slice(index + 1).toLowerCase();
+  }
+
+  private iconForSearchResult(result: SearchResult, extension: string | null): FileEntry["icon"] {
+    if (result.isDir) {
+      return { name: "folder", color: "blue" };
+    }
+
+    const kind = result.kind.toLowerCase();
+    if (kind.includes("spreadsheet")) {
+      return { name: "spreadsheet", color: null };
+    }
+    if (kind.includes("pdf")) {
+      return { name: "pdf", color: null };
+    }
+    if (kind.includes("word")) {
+      return { name: "word-document", color: null };
+    }
+    if (kind.includes("markdown")) {
+      return { name: "markdown", color: null };
+    }
+    if (kind.includes("archive")) {
+      return { name: "archive", color: null };
+    }
+    if (extension && ["png", "jpg", "jpeg", "webp"].includes(extension)) {
+      return { name: "file", color: null };
+    }
+
+    return { name: "generic", color: null };
+  }
+
+  private fileIconAssetClass(name: string): string | null {
+    switch (name) {
+      case "spreadsheet":
+        return "file-glyph--spreadsheet";
+      case "pdf":
+        return "file-glyph--pdf";
+      case "word-document":
+        return "file-glyph--document";
+      case "markdown":
+        return "file-glyph--markdown";
+      case "archive":
+        return "file-glyph--archive";
+      case "document":
+      case "generic":
+        return "file-glyph--generic";
+      default:
+        return null;
+    }
   }
 
   private async recordRecent(path: string): Promise<void> {

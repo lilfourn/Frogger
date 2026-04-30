@@ -1,7 +1,7 @@
 import { Injectable } from "@angular/core";
 import { invoke } from "@tauri-apps/api/core";
 
-import type { AppBootstrap, AppSettings, DirectoryListRequest, DirectoryListing, FolderViewState, SidebarState, SortState, ThumbnailDescriptor, WindowState } from "./frogger-api.types";
+import type { AppBootstrap, AppSettings, DirectoryListRequest, DirectoryListing, FolderViewState, SearchResult, SidebarState, SortState, ThumbnailDescriptor, WindowState } from "./frogger-api.types";
 
 @Injectable({ providedIn: "root" })
 export class FroggerApiService {
@@ -37,6 +37,10 @@ export class FroggerApiService {
     };
 
     return invoke<DirectoryListing>("list_directory", { request });
+  }
+
+  searchMetadata(query: string, limit: number | null = 100): Promise<SearchResult[]> {
+    return invoke<SearchResult[]>("search_metadata", { query, limit });
   }
 
   openFileWithDefaultApp(path: string): Promise<SidebarState> {
